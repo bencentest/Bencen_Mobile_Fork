@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+
+  /* Helper to replicate v3-style config if needed, but v4 uses CSS variables natively */
+}
+
+/* Custom Variables */
+:root {
+  --bg: #f8fafc;
+  --fg: #1a1a1a;
+  --muted: #475569;
+  --border: #d1d5db;
+  --border-strong: #b6bec8;
+  --row: #ffffff;
+  --row-alt: #f3f4f6;
+  --head-bg: #f8fafc;
+  --accent: #f97316;
+  --good: #198754;
+  --warn: #dc3545;
+  --total-bg: #f8fafc;
+
+  /* Table specific */
+  --border-hair: color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+}
