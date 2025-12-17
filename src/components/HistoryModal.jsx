@@ -1,10 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { X, Calendar, User, FileText, Plus, Loader2 } from 'lucide-react';
+import { X, Calendar, User, FileText, Plus, Loader2, Pencil, Trash2 } from 'lucide-react';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '../services/api';
+import { ProgressModal } from './ProgressModal';
 
-export function HistoryModal({ item, onClose, onAddProgress }) {
+export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
     const [history, setHistory] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [editingEntry, setEditingEntry] = useState(null);
+    const [isAdding, setIsAdding] = useState(false);
+    const [deletingEntry, setDeletingEntry] = useState(null);
 
     useEffect(() => {
         loadHistory();
@@ -21,141 +26,133 @@ export function HistoryModal({ item, onClose, onAddProgress }) {
         }
     };
 
+    const handleDeleteClick = (entry) => {
+        setDeletingEntry(entry);
+    };
+
+    const confirmDelete = async () => {
+        if (!deletingEntry) return;
+        try {
+            await api.deleteProgress(deletingEntry.id);
+            loadHistory();
+            if (onUpdate) onUpdate(); // Refresh parent dots
+            setDeletingEntry(null);
+        } catch (err) {
+            console.error(err);
+            alert("Error al eliminar.");
+        }
+    };
+
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
-                {/* Header */}
-                <div className="flex items-center justify-between p-4 border-b border-gray-100 bg-gray-50/50">
-                    <div>
-                        <h3 className="font-bold text-lg text-neutral-900">Historial de Avances</h3>
-                        <p className="text-xs text-neutral-500 font-mono mt-0.5">{item.item}</p>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh] relative">
+                {/* Header - Fixed & Sticky */}
+                <div className="flex items-start justify-between p-4 border-b border-gray-100 bg-white z-10">
+                    <div className='pr-2 w-full'>
+                        <h3 className="font-bold text-neutral-900 text-lg leading-tight mb-1">{item.descripcion}</h3>
+                        <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-[var(--accent)]">{item.item}</span>
+                            <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full border border-gray-200 font-medium">
+                                {Number(item.cantidad).toLocaleString('es-AR')} {item.unidad}
+                            </span>
+                        </div>
                     </div>
-                    <button onClick={onClose} className="p-2 -mr-2 text-neutral-500 hover:text-neutral-800 rounded-full hover:bg-neutral-100">
-                        <X className="w-5 h-5" />
+                    <button onClick={onClose} className="p-2 -mr-2 text-neutral-500 hover:text-neutral-800 rounded-full hover:bg-neutral-100 shrink-0">
+                        <X className="w-6 h-6" />
                     </button>
                 </div>
 
                 {/* Content */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                <div className="flex-1 overflow-y-auto p-4 space-y-6">
 
-                    {/* Item Summary & Stats */}
-                    <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-4">
-                        <div>
-                            <p className="text-sm font-medium text-neutral-800 leading-snug">{item.descripcion}</p>
-                            <div className="flex justify-between items-end mt-1">
-                                <span className="text-xs text-neutral-500">Total: {Number(item.cantidad).toLocaleString('es-AR')} {item.unidad}</span>
-                            </div>
-                        </div>
-
-                        {/* Progress Logic */}
+                    {/* Progress Chart Section */}
+                    <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
                         {(() => {
                             // Calculate cumulative progress sorted by date
                             const sortedHistory = [...history].sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
 
                             let runningTotal = 0;
-                            const dataPoints = sortedHistory.map(h => {
-                                runningTotal += h.avance;
-                                return { date: h.fecha, total: runningTotal };
-                            });
+                            // Add an initial point at 0 if there's history, to show the climb
+                            const chartData = sortedHistory.length > 0 ? [
+                                { date: 'Inicio', value: 0, avance: 0, fullDate: '', obs: 'Inicio' },
+                                ...sortedHistory.map(h => {
+                                    runningTotal += h.avance;
+                                    return {
+                                        date: new Date(h.fecha).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' }),
+                                        fullDate: new Date(h.fecha).toLocaleDateString('es-AR', { day: '2-digit', month: 'long', year: 'numeric' }),
+                                        value: runningTotal,
+                                        avance: h.avance,
+                                        obs: h.observaciones
+                                    };
+                                })
+                            ] : [];
+
+                            // If no history, we might want to show empty state or 0
+                            if (chartData.length === 0) {
+                                return (
+                                    <div className="flex items-baseline justify-between mb-2">
+                                        <span className="text-xs font-bold text-neutral-500 uppercase tracking-widest">Avance Total</span>
+                                        <span className="text-2xl font-black text-neutral-900">0.00%</span>
+                                    </div>
+                                )
+                            }
 
                             const totalProgress = runningTotal;
                             const isComplete = totalProgress >= 100;
 
-                            // Chart Generation
-                            const height = 60; // Increased internal height resolution
-                            const width = 300; // Increased internal width resolution
-                            const paddingX = 10; // Padding to avoid clipping dots
-                            const paddingY = 5;
-
-                            const maxVal = 100;
-
-                            // Generate points for SVG Polyline
-                            let points = "";
-                            const effectiveWidth = width - (paddingX * 2);
-
-                            if (dataPoints.length > 0) {
-                                // If we only have one point, we can't draw a line. 
-                                // Let's synthesize a "start" point at 0 if user wants timeline feel? 
-                                // OR just center the single point.
-                                // Logic: Distribute points evenly across effectiveWidth
-
-                                points = dataPoints.map((p, i) => {
-                                    const x = dataPoints.length === 1
-                                        ? width / 2
-                                        : paddingX + (i * (effectiveWidth / (dataPoints.length - 1)));
-
-                                    // Inverted Y (SVG coords)
-                                    // Scale value to height (minus paddingY to avoid clipping top)
-                                    const y = height - paddingY - ((p.total / maxVal) * (height - (paddingY * 2)));
-                                    return `${x},${y}`;
-                                }).join(' ');
-                            }
-
-                            // Generate Fill Path
-                            // Start at bottom-left (or first X), go to line points, end at bottom-right (or last X)
-                            const firstX = dataPoints.length === 1 ? width / 2 : paddingX;
-                            const lastX = dataPoints.length === 1 ? width / 2 : width - paddingX;
-
-                            const fillPoints = dataPoints.length > 0
-                                ? `${firstX},${height} ${points} ${lastX},${height}`
-                                : "";
+                            const CustomTooltip = ({ active, payload, label }) => {
+                                if (active && payload && payload.length) {
+                                    return (
+                                        <div className="bg-neutral-900 text-white text-xs rounded-lg p-2 shadow-xl border border-neutral-800">
+                                            <p className="font-bold mb-1">{payload[0].payload.fullDate || label}</p>
+                                            <p className="text-green-400 font-bold">Total: {payload[0].value.toFixed(2)}%</p>
+                                            <p className="text-neutral-400">Avance: +{payload[0].payload.avance}%</p>
+                                        </div>
+                                    );
+                                }
+                                return null;
+                            };
 
                             return (
                                 <div className="pt-2 border-t border-gray-100">
-                                    <div className="flex items-baseline justify-between mb-2">
+                                    <div className="flex items-baseline justify-between mb-4">
                                         <span className="text-xs font-bold text-neutral-500 uppercase tracking-widest">Avance Total</span>
-                                        <span className={`text-2xl font-black ${isComplete ? 'text-green-600' : 'text-neutral-900'}`}>
-                                            {totalProgress.toFixed(2)}%
+                                        <span className={`text-4xl font-black ${isComplete ? 'text-green-600' : 'text-neutral-900'}`}>
+                                            {totalProgress.toFixed(2)}<span className="text-lg text-neutral-400 ml-1">%</span>
                                         </span>
                                     </div>
 
-                                    {/* Mini Chart */}
-                                    {dataPoints.length > 0 && (
-                                        <div className="h-24 w-full bg-gray-50 rounded-lg relative overflow-hidden flex items-end border border-gray-100">
-                                            <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full" preserveAspectRatio="none">
+                                    {/* Recharts Area Chart */}
+                                    <div className="h-40 w-full -ml-2">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <AreaChart data={chartData} margin={{ top: 5, right: 0, left: 0, bottom: 0 }}>
                                                 <defs>
-                                                    <linearGradient id="chartGradient" x1="0" x2="0" y1="0" y2="1">
-                                                        <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.3" />
-                                                        <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.0" />
+                                                    <linearGradient id="colorGradient" x1="0" y1="0" x2="0" y2="1">
+                                                        <stop offset="5%" stopColor="var(--accent)" stopOpacity={0.2} />
+                                                        <stop offset="95%" stopColor="var(--accent)" stopOpacity={0} />
                                                     </linearGradient>
                                                 </defs>
-
-                                                {/* Grid lines */}
-                                                <line x1="0" y1={height} x2={width} y2={height} stroke="#e5e5e5" strokeWidth="1" />
-                                                <line x1="0" y1="0" x2={width} y2="0" stroke="#e5e5e5" strokeWidth="1" />
-                                                {/* 50% line */}
-                                                <line x1="0" y1={height / 2} x2={width} y2={height / 2} stroke="#f0f0f0" strokeWidth="1" strokeDasharray="4 4" />
-
-                                                {/* Area Fill */}
-                                                <polygon points={fillPoints} fill="url(#chartGradient)" />
-
-                                                {/* Line */}
-                                                <polyline
-                                                    points={points}
-                                                    fill="none"
-                                                    stroke="var(--accent)"
-                                                    strokeWidth="3"
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
+                                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+                                                <XAxis
+                                                    dataKey="date"
+                                                    axisLine={false}
+                                                    tickLine={false}
+                                                    tick={{ fontSize: 10, fill: '#a3a3a3' }}
+                                                    interval="preserveStartEnd"
                                                 />
-
-                                                {/* Dots */}
-                                                {dataPoints.map((p, i) => {
-                                                    const x = dataPoints.length === 1
-                                                        ? width / 2
-                                                        : paddingX + (i * (effectiveWidth / (dataPoints.length - 1)));
-                                                    const y = height - paddingY - ((p.total / maxVal) * (height - (paddingY * 2)));
-
-                                                    return (
-                                                        <g key={i}>
-                                                            <circle cx={x} cy={y} r="4" fill="white" stroke="var(--accent)" strokeWidth="2" />
-                                                            {/* Optional: Show value on last point? */}
-                                                        </g>
-                                                    );
-                                                })}
-                                            </svg>
-                                        </div>
-                                    )}
+                                                <Tooltip content={<CustomTooltip />} cursor={{ stroke: 'var(--accent)', strokeWidth: 1, strokeDasharray: '4 4' }} />
+                                                <Area
+                                                    type="monotone"
+                                                    dataKey="value"
+                                                    stroke="var(--accent)"
+                                                    strokeWidth={3}
+                                                    fillOpacity={1}
+                                                    fill="url(#colorGradient)"
+                                                    activeDot={{ r: 6, strokeWidth: 0, fill: 'var(--accent)' }}
+                                                />
+                                            </AreaChart>
+                                        </ResponsiveContainer>
+                                    </div>
                                 </div>
                             );
                         })()}
@@ -171,17 +168,28 @@ export function HistoryModal({ item, onClose, onAddProgress }) {
                             </div>
                         ) : (
                             history.map((entry) => (
-                                <div key={entry.id} className="relative pl-4 border-l-2 border-orange-100 pb-2 last:pb-0">
+                                <div key={entry.id} className="relative pl-4 border-l-2 border-orange-100 pb-4 last:pb-0 group">
                                     <div className="absolute -left-[5px] top-0 w-2.5 h-2.5 rounded-full bg-orange-400 border-2 border-white"></div>
 
-                                    <div className="bg-gray-50 rounded-lg p-3 ml-2 border border-gray-100">
+                                    <div className="bg-gray-50 rounded-lg p-3 ml-2 border border-gray-100 hover:border-orange-200 transition-colors">
                                         <div className="flex justify-between items-start mb-2">
                                             <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-700">
                                                 <Calendar className="w-3.5 h-3.5 text-orange-500" />
                                                 {new Date(entry.fecha).toLocaleDateString('es-AR')}
                                             </div>
-                                            <div className="bg-green-100 text-green-700 text-xs font-bold px-2 py-0.5 rounded-full">
-                                                {entry.avance}%
+                                            <div className="flex items-center gap-2">
+                                                <div className="bg-green-100 text-green-700 text-xs font-bold px-2 py-0.5 rounded-full">
+                                                    {entry.avance}%
+                                                </div>
+                                                {/* Actions */}
+                                                <div className="flex items-center gap-1 transition-opacity">
+                                                    <button onClick={() => setEditingEntry(entry)} className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded">
+                                                        <Pencil className="w-3.5 h-3.5" />
+                                                    </button>
+                                                    <button onClick={() => handleDeleteClick(entry)} className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded">
+                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                </div>
                                             </div>
                                         </div>
 
@@ -203,14 +211,59 @@ export function HistoryModal({ item, onClose, onAddProgress }) {
                 {/* Footer Action */}
                 <div className="p-4 border-t border-gray-100 bg-gray-50">
                     <button
-                        onClick={onAddProgress}
+                        onClick={() => setIsAdding(true)}
                         className="w-full h-12 bg-neutral-900 hover:bg-black text-white font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg active:scale-[0.98] transition-all"
                     >
                         <Plus className="w-5 h-5" />
                         Nuevo Avance
                     </button>
                 </div>
+
+                {/* DELETE CONFIRMATION OVERLAY */}
+                {deletingEntry && (
+                    <div className="absolute inset-0 bg-white/95 z-50 flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-200">
+                        <div className="bg-red-100 p-4 rounded-full mb-4">
+                            <Trash2 className="w-8 h-8 text-red-600" />
+                        </div>
+                        <h4 className="text-lg font-bold text-neutral-900 mb-2">¿Eliminar este avance?</h4>
+                        <p className="text-sm text-neutral-500 mb-8">
+                            Se eliminará el registro del {new Date(deletingEntry.fecha).toLocaleDateString()} ({deletingEntry.avance}%) de forma permanente.
+                        </p>
+                        <div className="flex flex-col w-full gap-3">
+                            <button
+                                onClick={confirmDelete}
+                                className="w-full h-12 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl shadow-lg shadow-red-500/20 active:scale-[0.98] transition-all"
+                            >
+                                Sí, Eliminar
+                            </button>
+                            <button
+                                onClick={() => setDeletingEntry(null)}
+                                className="w-full h-12 bg-gray-100 hover:bg-gray-200 text-neutral-700 font-bold rounded-xl active:scale-[0.98] transition-all"
+                            >
+                                Cancelar
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
+
+            {/* Modal for Editing or Creating Strategy */}
+            {(editingEntry || isAdding) && (
+                <ProgressModal
+                    item={item}
+                    editingEntry={editingEntry}
+                    onClose={() => {
+                        setEditingEntry(null);
+                        setIsAdding(false);
+                    }}
+                    onSuccess={() => {
+                        loadHistory();
+                        if (onUpdate) onUpdate();
+                        setEditingEntry(null);
+                        setIsAdding(false);
+                    }}
+                />
+            )}
         </div>
     );
 }

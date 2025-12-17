@@ -57,20 +57,26 @@ export const api = {
 
     getActiveItemIds: async (licitacionId) => {
         try {
-            // Fetch distinct item_ids that have progress
+            // Fetch item_ids and their individual progress chunks
             const { data, error } = await supabase
                 .from('partes_diarios')
-                .select('item_id')
+                .select('item_id, avance')
                 .eq('id_licitacion', licitacionId);
 
             if (error) throw error;
 
-            // Return unique IDs
-            const ids = new Set(data.map(d => d.item_id));
-            return ids;
+            // Aggregate progress by item_id
+            const progressMap = new Map();
+
+            data.forEach(row => {
+                const current = progressMap.get(row.item_id) || 0;
+                progressMap.set(row.item_id, current + row.avance);
+            });
+
+            return progressMap;
         } catch (error) {
             console.error('Error fetching active items:', error);
-            return new Set();
+            return new Map();
         }
     },
 
@@ -97,6 +103,41 @@ export const api = {
             return data;
         } catch (error) {
             console.error('Error saving progress:', error);
+            throw error;
+        }
+    },
+
+    updateProgress: async (id, payload) => {
+        try {
+            const { data, error } = await supabase
+                .from('partes_diarios')
+                .update({
+                    avance: parseFloat(payload.avance),
+                    observaciones: payload.observaciones,
+                    fecha: payload.fecha
+                })
+                .eq('id', id)
+                .select();
+
+            if (error) throw error;
+            return data;
+        } catch (error) {
+            console.error('Error updating progress:', error);
+            throw error;
+        }
+    },
+
+    deleteProgress: async (id) => {
+        try {
+            const { error } = await supabase
+                .from('partes_diarios')
+                .delete()
+                .eq('id', id);
+
+            if (error) throw error;
+            return true;
+        } catch (error) {
+            console.error('Error deleting progress:', error);
             throw error;
         }
     },

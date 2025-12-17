@@ -56,9 +56,7 @@ export function ProjectSelector({ onSelect }) {
                                     <span className="block font-bold text-neutral-800 text-lg leading-tight group-hover:text-orange-700 transition-colors">
                                         {project.nombre_abreviado}
                                     </span>
-                                    <span className="inline-flex mt-1.5 items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-500 border border-gray-200">
-                                        ID: {project.id_licitacion}
-                                    </span>
+
                                 </div>
                             </div>
 
