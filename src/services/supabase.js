@@ -9,9 +9,3 @@ if (!supabaseUrl || !supabaseKey) {
 
 // Default client
 export const supabase = createClient(supabaseUrl || '', supabaseKey || '')
-
-// Client for Finnegans schema views
-export const supabaseFinnegans = createClient(supabaseUrl || '', supabaseKey || '', {
-    db: { schema: 'Finnegans' },
-    auth: { persistSession: false }
-})

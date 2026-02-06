@@ -1,16 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import { X, Calendar, User, FileText, Plus, Loader2, Pencil, Trash2 } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceArea, ReferenceLine } from 'recharts';
 import { api } from '../services/api';
 import { ProgressModal } from './ProgressModal';
 
 export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
     const [history, setHistory] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [estimatedByDate, setEstimatedByDate] = useState({}); // iso date -> cumulative estimated %
+    const [plannedWindow, setPlannedWindow] = useState(null); // { startDate, endDate }
     const [editingEntry, setEditingEntry] = useState(null);
     const [isAdding, setIsAdding] = useState(false);
     const [deletingEntry, setDeletingEntry] = useState(null);
     const [viewingImage, setViewingImage] = useState(null);
+
+    const existingRange = (() => {
+        const entries = (history || []).filter(h => h?.fecha_inicio && h?.fecha_fin);
+        if (entries.length === 0) return null;
+        const minStart = entries.reduce((min, h) => (h.fecha_inicio < min ? h.fecha_inicio : min), entries[0].fecha_inicio);
+        const maxEnd = entries.reduce((max, h) => (h.fecha_fin > max ? h.fecha_fin : max), entries[0].fecha_fin);
+        return { minStart, maxEnd };
+    })();
 
     useEffect(() => {
         loadHistory();
@@ -20,6 +30,28 @@ export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
         try {
             const data = await api.getItemHistory(item.id);
             setHistory(data);
+
+            // Estimated curve for the same date points shown in the chart.
+            // Uses period-based avance_estimado from datos_licitaciones_avances.
+            const licId = item?.id_licitacion;
+            if (licId) {
+                // Chart X-axis is "fecha de avance" (fecha_fin/fecha), so estimado is mapped to that same date.
+                const dates = (data || [])
+                    .map(h => String(h?.fecha_fin || h?.fecha || '').slice(0, 10))
+                    .filter(Boolean);
+                const map = await api.getItemEstimatedTimeline({
+                    licitacionId: licId,
+                    itemId: item.id,
+                    dates
+                });
+                setEstimatedByDate(map || {});
+
+                const pw = await api.getPlannedWindowByEstimado({ licitacionId: licId, itemIds: [item.id] });
+                setPlannedWindow(pw || null);
+            } else {
+                setEstimatedByDate({});
+                setPlannedWindow(null);
+            }
         } catch (err) {
             console.error(err);
         } finally {
@@ -46,7 +78,7 @@ export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh] relative">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh] relative">
                 {/* Header - Fixed & Sticky */}
                 <div className="flex items-start justify-between p-4 border-b border-gray-100 bg-white z-10">
                     <div className='pr-2 w-full'>
@@ -69,24 +101,93 @@ export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
                     {/* Progress Chart Section */}
                     <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
                         {(() => {
-                            // Calculate cumulative progress sorted by date
-                            const sortedHistory = [...history].sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
+                            const totalQty = Number(item?.cantidad) || 0;
+                            const unit = item?.unidad || '';
+
+                            const fmtDate = (iso) => {
+                                if (!iso) return '-';
+                                try { return new Date(iso).toLocaleDateString('es-AR'); } catch { return String(iso); }
+                            };
+
+                            const fmtDateTime = (iso) => {
+                                if (!iso) return '-';
+                                try {
+                                    return new Date(iso).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                                } catch {
+                                    return String(iso);
+                                }
+                            };
+
+                            // Calculate cumulative progress sorted by "fecha de avance" (fecha_fin/fecha)
+                            const sortedHistory = [...history].sort((a, b) => new Date(a.fecha_fin || a.fecha) - new Date(b.fecha_fin || b.fecha));
 
                             let runningTotal = 0;
-                            // Add an initial point at 0 if there's history, to show the climb
-                            const chartData = sortedHistory.length > 0 ? [
-                                { xKey: 'start', date: 'Inicio', value: 0, avance: 0, fullDate: 'Inicio', obs: 'Inicio' },
-                                ...sortedHistory.map((h, index) => {
-                                    runningTotal += h.avance;
-                                    return {
-                                        xKey: h.id, // Use unique ID to prevent X-axis merging
-                                        date: new Date(h.fecha).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' }),
-                                        fullDate: new Date(h.fecha).toLocaleDateString('es-AR', { day: '2-digit', month: 'long', year: 'numeric' }),
-                                        value: runningTotal,
-                                        avance: h.avance,
-                                        obs: h.observaciones
-                                    };
-                                })
+
+                            const points = sortedHistory.map((h) => {
+                                runningTotal += h.avance;
+                                const registroIso = h.created_at;         // fecha de registro
+                                const avanceIso = h.fecha_fin || h.fecha; // fecha de avance (segun el parte)
+                                const avanceDate = String(avanceIso || '').slice(0, 10);
+                                const est = avanceDate ? (Number(estimatedByDate?.[String(avanceDate)]) || 0) : 0;
+                                const deltaQty = totalQty > 0 ? (totalQty * (Number(h.avance) || 0) / 100) : null;
+                                const x = avanceIso ? new Date(avanceIso).getTime() : null;
+
+                                return {
+                                    x,
+                                    xKey: h.id, // Use unique ID to prevent X-axis merging
+                                    date: fmtDate(avanceIso),
+                                    fullDate: fmtDate(avanceIso),
+                                    value: runningTotal,
+                                    estimado: est,
+                                    avance: h.avance,
+                                    obs: h.observaciones,
+                                    registroIso,
+                                    registroFullDate: fmtDateTime(registroIso),
+                                    avanceIso,
+                                    periodoDesde: h.fecha_inicio || null,
+                                    periodoHasta: h.fecha_fin || null,
+                                    deltaQty,
+                                    unit
+                                };
+                            }).filter(p => Number.isFinite(p.x));
+
+                            const plannedStart = plannedWindow?.startDate ? new Date(plannedWindow.startDate).getTime() : null;
+                            const plannedEnd = plannedWindow?.endDate ? new Date(plannedWindow.endDate).getTime() : null;
+
+                            const xValues = points.map(d => d.x);
+                            const xMinData = xValues.length ? Math.min(...xValues) : Date.now();
+                            const xMaxData = xValues.length ? Math.max(...xValues) : Date.now();
+
+                            // Avoid extreme zoom-out when there are outlier dates: keep the visible window near the planned range.
+                            // Outliers are clamped to the edge (tooltip still shows the true dates).
+                            const dayMs = 24 * 60 * 60 * 1000;
+                            const extraDays = 45; // visible padding around the planned window
+                            const maxSpanDays = 210; // if data span exceeds this, we clamp
+
+                            const baseMin = plannedStart ?? xMinData;
+                            const baseMax = plannedEnd ?? xMaxData;
+
+                            const spanDays = (xMaxData - xMinData) / dayMs;
+                            const shouldClamp = plannedStart && plannedEnd && spanDays > maxSpanDays;
+
+                            const visibleMin = shouldClamp ? (plannedStart - extraDays * dayMs) : Math.min(xMinData, baseMin);
+                            const visibleMax = shouldClamp ? (plannedEnd + extraDays * dayMs) : Math.max(xMaxData, baseMax);
+
+                            const clampX = (x) => Math.min(visibleMax, Math.max(visibleMin, x));
+
+                            // Add an initial point at 0 to show the climb from the start of the visible window.
+                            const chartPoints = points.map(p => ({
+                                ...p,
+                                x_plot: clampX(p.x),
+                                isOutlierLeft: p.x < visibleMin,
+                                isOutlierRight: p.x > visibleMax,
+                                // Estimado should only be drawn inside the planned window.
+                                estimado_plot: (plannedStart && plannedEnd && p.x >= plannedStart && p.x <= plannedEnd) ? p.estimado : null
+                            }));
+
+                            const chartData = chartPoints.length > 0 ? [
+                                { x: visibleMin, x_plot: visibleMin, xKey: 'start', date: 'Inicio', value: 0, estimado: 0, estimado_plot: null, avance: 0, fullDate: 'Inicio', obs: 'Inicio', deltaQty: null, unit },
+                                ...chartPoints
                             ] : [];
 
                             // If no history, we might want to show empty state or 0
@@ -104,11 +205,26 @@ export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
 
                             const CustomTooltip = ({ active, payload, label }) => {
                                 if (active && payload && payload.length) {
+                                    const p = payload[0].payload;
+                                    const realPoint = payload.find(x => x.dataKey === 'value')?.value;
+                                    const estPoint = payload.find(x => x.dataKey === 'estimado_plot' || x.dataKey === 'estimado')?.value;
                                     return (
                                         <div className="bg-neutral-900 text-white text-xs rounded-lg p-2 shadow-xl border border-neutral-800">
-                                            <p className="font-bold mb-1">{payload[0].payload.fullDate || payload[0].payload.date}</p>
-                                            <p className="text-green-400 font-bold">Total: {payload[0].value.toFixed(2)}%</p>
-                                            <p className="text-neutral-400">Avance: +{payload[0].payload.avance}%</p>
+                                            <p className="font-bold mb-1">{p.fullDate || p.date}</p>
+
+                                            <p className="text-neutral-200">
+                                                Avance cargado: <span className="font-bold text-white">+{p.avance}%</span>
+                                                {p.deltaQty !== null ? ` (${Number(p.deltaQty).toLocaleString('es-AR')} ${p.unit})` : ''}
+                                            </p>
+                                            {estPoint !== undefined && (
+                                                <p className="text-amber-300 font-bold mt-1">Estimado acumulado: {Number(estPoint).toFixed(2)}%</p>
+                                            )}
+                                            {realPoint !== undefined && (
+                                                <p className="text-green-400 font-bold">Real acumulado: {Number(realPoint).toFixed(2)}%</p>
+                                            )}
+                                            {p.registroFullDate && p.registroFullDate !== '-' && (
+                                                <p className="text-neutral-500 mt-1">Registrado: {p.registroFullDate}</p>
+                                            )}
                                         </div>
                                     );
                                 }
@@ -123,11 +239,16 @@ export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
                                             {totalProgress.toFixed(2)}<span className="text-lg text-neutral-400 ml-1">%</span>
                                         </span>
                                     </div>
+                                    {plannedWindow?.startDate && plannedWindow?.endDate && (
+                                        <div className="text-[11px] text-neutral-500 -mt-2 mb-3">
+                                            Periodo estimado: <span className="font-semibold text-neutral-700">{fmtDate(plannedWindow.startDate)} - {fmtDate(plannedWindow.endDate)}</span>
+                                        </div>
+                                    )}
 
                                     {/* Recharts Area Chart */}
-                                    <div className="h-40 w-full -ml-2">
+                                    <div className="h-40 w-full">
                                         <ResponsiveContainer width="100%" height="100%">
-                                            <AreaChart data={chartData} margin={{ top: 5, right: 0, left: 10, bottom: 0 }}>
+                                            <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 24, bottom: 0 }}>
                                                 <defs>
                                                     <linearGradient id="colorGradient" x1="0" y1="0" x2="0" y2="1">
                                                         <stop offset="5%" stopColor="var(--accent)" stopOpacity={0.2} />
@@ -136,20 +257,47 @@ export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
                                                 </defs>
                                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
                                                 <XAxis
-                                                    dataKey="xKey"
+                                                    dataKey="x_plot"
+                                                    type="number"
+                                                    scale="time"
+                                                    domain={[visibleMin, visibleMax]}
                                                     axisLine={false}
                                                     tickLine={false}
                                                     tick={{ fontSize: 10, fill: '#a3a3a3' }}
                                                     interval="preserveStartEnd"
-                                                    tickFormatter={(val, index) => {
-                                                        // Fallback to finding object by ID if needed, but index usually aligns for category
-                                                        // Actually Recharts passes the value of dataKey
-                                                        // Let's find the item in chartData
-                                                        const item = chartData.find(d => d.xKey === val);
-                                                        return item ? item.date : '';
+                                                    padding={{ left: 12, right: 12 }}
+                                                    tickFormatter={(val) => {
+                                                        try {
+                                                            return new Date(val).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
+                                                        } catch {
+                                                            return '';
+                                                        }
                                                     }}
                                                 />
                                                 <Tooltip content={<CustomTooltip />} cursor={{ stroke: 'var(--accent)', strokeWidth: 1, strokeDasharray: '4 4' }} />
+
+                                                {/* Planned window markers (estimado) */}
+                                                {plannedStart && plannedEnd && (
+                                                    <>
+                                                        <ReferenceArea x1={plannedStart} x2={plannedEnd} fill="#93c5fd" fillOpacity={0.10} />
+                                                        <ReferenceLine
+                                                            x={plannedStart}
+                                                            stroke="#60a5fa"
+                                                            strokeDasharray="4 4"
+                                                            label={{ value: fmtDate(plannedWindow.startDate), position: 'insideBottomLeft', fill: '#60a5fa', fontSize: 10 }}
+                                                        />
+                                                        <ReferenceLine
+                                                            x={plannedEnd}
+                                                            stroke="#60a5fa"
+                                                            strokeDasharray="4 4"
+                                                            label={{ value: fmtDate(plannedWindow.endDate), position: 'insideBottomRight', fill: '#60a5fa', fontSize: 10 }}
+                                                        />
+                                                        {/* Before/After plan shading */}
+                                                        <ReferenceArea x1={visibleMin} x2={plannedStart} fill="#fca5a5" fillOpacity={0.06} />
+                                                        <ReferenceArea x1={plannedEnd} x2={visibleMax} fill="#c4b5fd" fillOpacity={0.06} />
+                                                    </>
+                                                )}
+
                                                 <Area
                                                     type="monotone"
                                                     dataKey="value"
@@ -158,6 +306,22 @@ export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
                                                     fillOpacity={1}
                                                     fill="url(#colorGradient)"
                                                     activeDot={{ r: 6, strokeWidth: 0, fill: 'var(--accent)' }}
+                                                    dot={(props) => {
+                                                        const x = props?.payload?.x;
+                                                        const before = plannedStart && x < plannedStart;
+                                                        const after = plannedEnd && x > plannedEnd;
+                                                        const fill = before ? '#ef4444' : after ? '#8b5cf6' : 'var(--accent)';
+                                                        return <circle cx={props.cx} cy={props.cy} r={3} fill={fill} stroke="#fff" strokeWidth={1} />;
+                                                    }}
+                                                />
+                                                <Line
+                                                    type="monotone"
+                                                    dataKey="estimado_plot"
+                                                    stroke="#f59e0b"
+                                                    strokeWidth={2}
+                                                    dot={false}
+                                                    strokeDasharray="0"
+                                                    isAnimationActive={false}
                                                 />
                                             </AreaChart>
                                         </ResponsiveContainer>
@@ -176,31 +340,81 @@ export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
                                 <p className="text-sm">No hay reportes cargados.</p>
                             </div>
                         ) : (
-                            history.map((entry) => (
-                                <div key={entry.id} className="relative pl-4 border-l-2 border-orange-100 pb-4 last:pb-0 group">
-                                    <div className="absolute -left-[5px] top-0 w-2.5 h-2.5 rounded-full bg-orange-400 border-2 border-white"></div>
+                            history.map((entry) => {
+                                const totalQty = Number(item?.cantidad) || 0;
+                                const unit = item?.unidad || '';
+                                const deltaQty = totalQty > 0 ? (totalQty * (Number(entry.avance) || 0) / 100) : null;
 
-                                    <div className="bg-gray-50 rounded-lg p-3 ml-2 border border-gray-100 hover:border-orange-200 transition-colors">
-                                        <div className="flex justify-between items-start mb-2">
-                                            <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-700">
-                                                <Calendar className="w-3.5 h-3.5 text-orange-500" />
-                                                {new Date(entry.fecha).toLocaleDateString('es-AR')}
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <div className="bg-green-100 text-green-700 text-xs font-bold px-2 py-0.5 rounded-full">
-                                                    {entry.avance}%
+                                const fmtDate = (iso) => {
+                                    if (!iso) return '-';
+                                    try { return new Date(iso).toLocaleDateString('es-AR'); } catch { return String(iso); }
+                                };
+
+                                const fmtDateTime = (iso) => {
+                                    if (!iso) return '-';
+                                    try {
+                                        return new Date(iso).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                                    } catch {
+                                        return String(iso);
+                                    }
+                                };
+
+                                return (
+                                    <div key={entry.id} className="relative pl-4 border-l-2 border-orange-100 pb-4 last:pb-0 group">
+                                        <div className="absolute -left-[5px] top-0 w-2.5 h-2.5 rounded-full bg-orange-400 border-2 border-white"></div>
+
+                                        <div className="bg-gray-50 rounded-lg p-3 ml-2 border border-gray-100 hover:border-orange-200 transition-colors">
+                                            <div className="flex items-start justify-between gap-3 mb-2">
+                                                {/* Left: requested literal fields */}
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="flex items-center gap-1.5 text-sm font-black text-neutral-900 truncate">
+                                                        <Calendar className="w-4 h-4 text-orange-500 shrink-0" />
+                                                        <span className="truncate">
+                                                            Fecha/rango de avance:{' '}
+                                                            <span className="font-black">
+                                                                {fmtDate(entry.fecha_fin || entry.fecha)}
+                                                            </span>
+                                                            <span className="text-neutral-500 font-semibold">
+                                                                {' '}({fmtDate(entry.fecha_inicio)} - {fmtDate(entry.fecha_fin)})
+                                                            </span>
+                                                        </span>
+                                                    </div>
+                                                    <div className="text-[11px] text-neutral-600 truncate mt-1">
+                                                        Periodo del item:{' '}
+                                                        <span className="font-semibold text-neutral-800">
+                                                            {existingRange?.minStart ? fmtDate(existingRange.minStart) : '-'} - {existingRange?.maxEnd ? fmtDate(existingRange.maxEnd) : '-'}
+                                                        </span>
+                                                    </div>
+                                                    <div className="text-[10px] text-neutral-400 truncate mt-1">
+                                                        Ingresado: {fmtDateTime(entry.created_at)}
+                                                    </div>
                                                 </div>
-                                                {/* Actions */}
-                                                <div className="flex items-center gap-1 transition-opacity">
-                                                    <button onClick={() => setEditingEntry(entry)} className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded">
-                                                        <Pencil className="w-3.5 h-3.5" />
-                                                    </button>
-                                                    <button onClick={() => handleDeleteClick(entry)} className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded">
-                                                        <Trash2 className="w-3.5 h-3.5" />
-                                                    </button>
+
+                                                {/* Right: big advance values (qty + %) */}
+                                                <div className="shrink-0 flex items-start gap-2">
+                                                    <div className="text-right">
+                                                        {deltaQty !== null ? (
+                                                            <div className="text-sm font-black text-neutral-900 leading-none">
+                                                                {Number(deltaQty).toLocaleString('es-AR')} <span className="text-xs text-neutral-500 font-bold">{unit}</span>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="text-sm font-black text-neutral-900 leading-none">-</div>
+                                                        )}
+                                                        <div className="text-xs font-black text-green-700 mt-1">
+                                                            {Number(entry.avance).toFixed(2)}%
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex items-center gap-1">
+                                                        <button onClick={() => setEditingEntry(entry)} className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded">
+                                                            <Pencil className="w-3.5 h-3.5" />
+                                                        </button>
+                                                        <button onClick={() => handleDeleteClick(entry)} className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded">
+                                                            <Trash2 className="w-3.5 h-3.5" />
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             </div>
-                                        </div>
 
                                         <p className="text-sm text-neutral-600 mb-2 italic">
                                             "{entry.observaciones}"
@@ -227,7 +441,8 @@ export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
                                         </div>
                                     </div>
                                 </div>
-                            ))
+                                );
+                            })
                         )}
                     </div>
                 </div>
@@ -293,6 +508,7 @@ export function HistoryModal({ item, onClose, onAddProgress, onUpdate }) {
             {(editingEntry || isAdding) && (
                 <ProgressModal
                     item={item}
+                    existingRange={existingRange}
                     editingEntry={editingEntry}
                     onClose={() => {
                         setEditingEntry(null);

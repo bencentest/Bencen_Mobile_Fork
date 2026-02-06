@@ -1,14 +1,16 @@
-import React, { useEffect, useState } from 'react';
-import { ChevronLeft, BarChart2, CheckCircle2, AlertCircle, List, Layers, Activity, ChevronRight, ChevronDown, RefreshCcw } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ChevronLeft, BarChart2, CheckCircle2, AlertCircle, List, Layers, Activity, ChevronRight, ChevronDown, RefreshCcw, LineChart as LineChartIcon } from 'lucide-react';
 import { api } from '../../services/api';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend } from 'recharts';
 import { HistoryModal } from '../HistoryModal';
+import { AvanceChartModal } from '../AvanceChartModal';
 
 export function ProjectDetailDashboard({ projectId, onBack }) {
     const [details, setDetails] = useState(null);
     const [loading, setLoading] = useState(true);
     const [activeTab, setActiveTab] = useState('feed'); // 'feed' | 'plan'
     const [viewingItem, setViewingItem] = useState(null);
+    const [chartContext, setChartContext] = useState(null); // { title, subtitle, itemIds }
 
     const loadData = () => {
         setLoading(true);
@@ -21,6 +23,30 @@ export function ProjectDetailDashboard({ projectId, onBack }) {
     useEffect(() => {
         loadData();
     }, [projectId]);
+
+    const weightsByItemId = useMemo(() => {
+        const map = {};
+        (details?.items || []).forEach(i => {
+            if (i?.id) map[String(i.id)] = Number(i.weight) || 1;
+        });
+        return map;
+    }, [details]);
+
+    const qtyByItemId = useMemo(() => {
+        const map = {};
+        (details?.items || []).forEach(i => {
+            if (i?.id) map[String(i.id)] = Number(i.cantidad) || 0;
+        });
+        return map;
+    }, [details]);
+
+    const unitByItemId = useMemo(() => {
+        const map = {};
+        (details?.items || []).forEach(i => {
+            if (i?.id) map[String(i.id)] = i.unidad || null;
+        });
+        return map;
+    }, [details]);
 
     if (loading) {
         return (
@@ -48,14 +74,30 @@ export function ProjectDetailDashboard({ projectId, onBack }) {
                         <p className="text-xs text-neutral-400">Visión Integral de Avance</p>
                     </div>
                 </div>
-                <button
-                    onClick={loadData}
-                    disabled={loading}
-                    className="p-2 rounded-full hover:bg-neutral-800 text-neutral-400 hover:text-white transition-colors disabled:opacity-50"
-                    title="Actualizar Datos"
-                >
-                    <RefreshCcw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={() => {
+                            const ids = (details?.items || []).map(i => i.id);
+                            setChartContext({
+                                title: 'Avance General (Estimado vs Real)',
+                                subtitle: 'Licitación',
+                                itemIds: ids
+                            });
+                        }}
+                        className="p-2 rounded-full hover:bg-neutral-800 text-neutral-400 hover:text-white transition-colors"
+                        title="Ver gráfico general"
+                    >
+                        <LineChartIcon className="w-5 h-5" />
+                    </button>
+                    <button
+                        onClick={loadData}
+                        disabled={loading}
+                        className="p-2 rounded-full hover:bg-neutral-800 text-neutral-400 hover:text-white transition-colors disabled:opacity-50"
+                        title="Actualizar Datos"
+                    >
+                        <RefreshCcw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+                    </button>
+                </div>
             </div>
 
             <div className="flex-1 p-4 md:p-6 w-full mx-auto space-y-6">
@@ -195,7 +237,11 @@ export function ProjectDetailDashboard({ projectId, onBack }) {
                         )}
 
                         {activeTab === 'plan' && (
-                            <PlanTreeView tree={details?.tree || []} onItemClick={setViewingItem} />
+                            <PlanTreeView
+                                tree={details?.tree || []}
+                                onItemClick={setViewingItem}
+                                onChart={(ctx) => setChartContext(ctx)}
+                            />
                         )}
                     </div>
                 </div>
@@ -210,12 +256,25 @@ export function ProjectDetailDashboard({ projectId, onBack }) {
                     onUpdate={() => { /* HistoryModal handles internal updates, but we refresh parent on close */ }}
                 />
             )}
+
+            {chartContext && (
+                <AvanceChartModal
+                    licitacionId={projectId}
+                    itemIds={chartContext.itemIds}
+                    weightsByItemId={weightsByItemId}
+                    qtyByItemId={qtyByItemId}
+                    unitByItemId={unitByItemId}
+                    title={chartContext.title}
+                    subtitle={chartContext.subtitle}
+                    onClose={() => setChartContext(null)}
+                />
+            )}
         </div>
     );
 }
 
 // PREMIUM DENSE PLAN VIEW
-function PlanTreeView({ tree, onItemClick }) {
+function PlanTreeView({ tree, onItemClick, onChart }) {
     const [expandedGroups, setExpandedGroups] = useState({});
     const [expandedSubgroups, setExpandedSubgroups] = useState({});
 
@@ -231,6 +290,10 @@ function PlanTreeView({ tree, onItemClick }) {
             {tree.map((group) => {
                 const isExpanded = expandedGroups[group.id] || false;
                 const hasProgress = group.progress > 0;
+                const groupItemIds = [
+                    ...(group.directItems?.map(i => i.id) || []),
+                    ...(group.subgroups?.flatMap(s => s.items?.map(i => i.id) || []) || [])
+                ];
 
                 return (
                     <div key={group.id} className="bg-white">
@@ -246,6 +309,21 @@ function PlanTreeView({ tree, onItemClick }) {
                                 </div>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                    type="button"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onChart?.({
+                                            title: 'Avance por Grupo (Estimado vs Real)',
+                                            subtitle: group.descripcion,
+                                            itemIds: groupItemIds
+                                        });
+                                    }}
+                                    className="p-1.5 rounded-md border border-gray-200 text-gray-500 hover:text-blue-700 hover:border-blue-300 bg-white"
+                                    title="Ver gráfico del grupo"
+                                >
+                                    <LineChartIcon className="w-4 h-4" />
+                                </button>
                                 {hasProgress && (
                                     <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-sm shadow-blue-200"></span>
                                 )}
@@ -259,6 +337,7 @@ function PlanTreeView({ tree, onItemClick }) {
                                 {group.subgroups?.map(subgroup => {
                                     const subExpanded = expandedSubgroups[subgroup.id] || false;
                                     const subHasProgress = subgroup.items?.some(i => i.avance > 0);
+                                    const subItemIds = subgroup.items?.map(i => i.id) || [];
 
                                     return (
                                         <div key={subgroup.id}>
@@ -271,6 +350,21 @@ function PlanTreeView({ tree, onItemClick }) {
                                                     <span className="text-xs font-bold text-neutral-600 uppercase tracking-wide text-left">{subgroup.descripcion}</span>
                                                 </div>
                                                 <div className="flex items-center gap-1">
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            onChart?.({
+                                                                title: 'Avance por Subgrupo (Estimado vs Real)',
+                                                                subtitle: subgroup.descripcion,
+                                                                itemIds: subItemIds
+                                                            });
+                                                        }}
+                                                        className="p-1.5 rounded-md border border-gray-200 text-gray-500 hover:text-blue-700 hover:border-blue-300 bg-white"
+                                                        title="Ver gráfico del subgrupo"
+                                                    >
+                                                        <LineChartIcon className="w-4 h-4" />
+                                                    </button>
                                                     {subExpanded ? <ChevronDown className="w-3 h-3 text-neutral-400" /> : <ChevronRight className="w-3 h-3 text-neutral-300" />}
                                                 </div>
                                             </button>
@@ -278,7 +372,16 @@ function PlanTreeView({ tree, onItemClick }) {
                                             {subExpanded && (
                                                 <div className="pl-6">
                                                     {subgroup.items?.map(item => (
-                                                        <PlanItemRow key={item.id} item={item} onClick={() => onItemClick(item)} />
+                                                        <PlanItemRow
+                                                            key={item.id}
+                                                            item={item}
+                                                            onClick={() => onItemClick(item)}
+                                                            onChart={() => onChart?.({
+                                                                title: 'Avance del Ítem (Estimado vs Real)',
+                                                                subtitle: `${item.item} ${item.descripcion}`.trim(),
+                                                                itemIds: [item.id]
+                                                            })}
+                                                        />
                                                     ))}
                                                 </div>
                                             )}
@@ -289,7 +392,16 @@ function PlanTreeView({ tree, onItemClick }) {
                                 {/* Direct Items in Group */}
                                 <div>
                                     {group.directItems?.map(item => (
-                                        <PlanItemRow key={item.id} item={item} onClick={() => onItemClick(item)} />
+                                        <PlanItemRow
+                                            key={item.id}
+                                            item={item}
+                                            onClick={() => onItemClick(item)}
+                                            onChart={() => onChart?.({
+                                                title: 'Avance del Ítem (Estimado vs Real)',
+                                                subtitle: `${item.item} ${item.descripcion}`.trim(),
+                                                itemIds: [item.id]
+                                            })}
+                                        />
                                     ))}
                                 </div>
                             </div>
@@ -301,7 +413,7 @@ function PlanTreeView({ tree, onItemClick }) {
     );
 }
 
-function PlanItemRow({ item, onClick }) {
+function PlanItemRow({ item, onClick, onChart }) {
     const isCompleted = item.avance >= 99.9;
     const inProgress = item.avance > 0 && !isCompleted;
 
@@ -318,6 +430,14 @@ function PlanItemRow({ item, onClick }) {
                 </div>
             </div>
             <div className="flex flex-col items-end shrink-0 pl-2">
+                <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onChart?.(); }}
+                    className="p-1 rounded-md border border-gray-200 text-gray-500 hover:text-blue-700 hover:border-blue-300 bg-white mb-1"
+                    title="Ver gráfico del ítem"
+                >
+                    <LineChartIcon className="w-3.5 h-3.5" />
+                </button>
                 {inProgress || isCompleted ? (
                     <span className={`font-bold ${isCompleted ? 'text-green-600' : 'text-blue-600'}`}>
                         {item.avance.toFixed(0)}%

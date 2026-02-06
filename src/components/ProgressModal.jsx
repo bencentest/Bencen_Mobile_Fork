@@ -1,10 +1,31 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Save, Loader2, AlertTriangle, Camera, Trash2, Image as ImageIcon } from 'lucide-react';
 import { api } from '../services/api';
 import imageCompression from 'browser-image-compression';
 
-export function ProgressModal({ item, editingEntry = null, onClose, onSuccess }) {
-    const [avance, setAvance] = useState(editingEntry ? editingEntry.avance : '');
+export function ProgressModal({ item, existingRange = null, editingEntry = null, onClose, onSuccess }) {
+    const totalCantidad = Number(item?.cantidad) || 0;
+    const unidad = item?.unidad || '';
+
+    const pctFromQty = (qty) => {
+        const q = Number(qty);
+        if (!Number.isFinite(q) || totalCantidad <= 0) return '';
+        return (q / totalCantidad) * 100;
+    };
+
+    const qtyFromPct = (pct) => {
+        const p = Number(pct);
+        if (!Number.isFinite(p) || totalCantidad <= 0) return '';
+        return (p / 100) * totalCantidad;
+    };
+
+    // Canonical value remains % (partes_diarios.avance). Quantity is just a UX helper.
+    const [avancePct, setAvancePct] = useState(editingEntry ? String(editingEntry.avance ?? '') : '');
+    const [avanceQty, setAvanceQty] = useState(() => {
+        if (!editingEntry || totalCantidad <= 0) return '';
+        const qty = qtyFromPct(editingEntry.avance);
+        return Number.isFinite(qty) ? String(qty) : '';
+    });
     const [observaciones, setObservaciones] = useState(editingEntry ? editingEntry.observaciones : '');
     const [fechaInicio, setFechaInicio] = useState(editingEntry?.fecha_inicio || '');
     const [fechaFin, setFechaFin] = useState(editingEntry?.fecha_fin || '');
@@ -12,6 +33,39 @@ export function ProgressModal({ item, editingEntry = null, onClose, onSuccess })
     const [loading, setLoading] = useState(false);
     const [uploadingImage, setUploadingImage] = useState(false);
     const [error, setError] = useState(null);
+    const [dateWarning, setDateWarning] = useState(null);
+
+    const fmt = (iso) => {
+        if (!iso) return '';
+        try {
+            return new Date(iso).toLocaleDateString('es-AR');
+        } catch {
+            return String(iso);
+        }
+    };
+
+    const updateWarning = (start, end) => {
+        if (!existingRange?.minStart || !existingRange?.maxEnd || !start || !end) {
+            setDateWarning(null);
+            return;
+        }
+
+        const outside = end < existingRange.minStart || start > existingRange.maxEnd;
+        if (!outside) {
+            setDateWarning(null);
+            return;
+        }
+
+        setDateWarning(
+            `Aviso: este ítem tiene avances registrados entre ${fmt(existingRange.minStart)} y ${fmt(existingRange.maxEnd)}. ` +
+            `Tu período (${fmt(start)} a ${fmt(end)}) está fuera de ese rango.`
+        );
+    };
+
+    useEffect(() => {
+        updateWarning(fechaInicio, fechaFin);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [fechaInicio, fechaFin, existingRange?.minStart, existingRange?.maxEnd]);
 
     const handleImageSelect = async (e) => {
         const files = Array.from(e.target.files);
@@ -50,10 +104,29 @@ export function ProgressModal({ item, editingEntry = null, onClose, onSuccess })
         e.preventDefault();
         setError(null);
 
-        const val = parseFloat(avance);
+        // Prefer % if provided, otherwise derive from quantity.
+        let pct = avancePct;
+        if ((pct === '' || pct === null || pct === undefined) && avanceQty !== '' && avanceQty !== null && avanceQty !== undefined) {
+            const derived = pctFromQty(avanceQty);
+            pct = derived === '' ? '' : String(derived);
+        }
+
+        const val = parseFloat(pct);
         if (isNaN(val) || val < 0 || val > 100) {
-            setError("El avance debe ser un porcentaje entre 0 y 100.");
+            setError("El avance debe ser un porcentaje entre 0 y 100 (o una cantidad válida).");
             return;
+        }
+
+        if (totalCantidad > 0 && avanceQty !== '' && avanceQty !== null && avanceQty !== undefined) {
+            const q = parseFloat(avanceQty);
+            if (isNaN(q) || q < 0) {
+                setError("La cantidad debe ser un número válido.");
+                return;
+            }
+            if (q > totalCantidad + 1e-9) {
+                setError(`La cantidad no puede superar el total del ítem (${totalCantidad.toLocaleString('es-AR')} ${unidad}).`);
+                return;
+            }
         }
 
         if (!observaciones.trim()) {
@@ -130,23 +203,59 @@ export function ProgressModal({ item, editingEntry = null, onClose, onSuccess })
 
                     <div>
                         <label className="block text-sm font-medium text-neutral-700 mb-1">
-                            {editingEntry ? 'Porcentaje de Avance' : 'Porcentaje de Avance Hoy (%)'}
+                            {editingEntry ? 'Avance' : 'Avance de Hoy'}
                         </label>
+
+                        {totalCantidad > 0 && (
+                            <div className="relative mb-2">
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={avanceQty}
+                                    onChange={(e) => {
+                                        const next = e.target.value;
+                                        setAvanceQty(next);
+                                        const nextPct = pctFromQty(next);
+                                        if (nextPct !== '') setAvancePct(String(nextPct));
+                                    }}
+                                    className="w-full h-11 pl-4 pr-16 rounded-xl border-gray-300 focus:border-[var(--accent)] focus:ring-[var(--accent)] text-base font-semibold"
+                                    placeholder="Cantidad"
+                                    autoFocus
+                                />
+                                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-xs">
+                                    {unidad}
+                                </span>
+                            </div>
+                        )}
                         <div className="relative">
                             <input
                                 type="number"
                                 step="0.01"
                                 min="0"
                                 max="100"
-                                value={avance}
-                                onChange={e => setAvance(e.target.value)}
+                                value={avancePct}
+                                onChange={e => {
+                                    const next = e.target.value;
+                                    setAvancePct(next);
+                                    if (totalCantidad > 0) {
+                                        const nextQty = qtyFromPct(next);
+                                        if (nextQty !== '') setAvanceQty(String(nextQty));
+                                    }
+                                }}
                                 className="w-full h-12 pl-4 pr-12 rounded-xl border-gray-300 focus:border-[var(--accent)] focus:ring-[var(--accent)] text-lg font-semibold"
                                 placeholder="Ej: 15.5"
-                                required
-                                autoFocus
+                                required={totalCantidad <= 0}
+                                autoFocus={totalCantidad <= 0}
                             />
                             <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold">%</span>
                         </div>
+
+                        {totalCantidad > 0 && (
+                            <p className="text-xs text-neutral-500 mt-1.5 ml-1">
+                                Total item: <span className="font-semibold text-neutral-700">{totalCantidad.toLocaleString('es-AR')} {unidad}</span>. Podes cargar por cantidad o por % (se calculan entre si).
+                            </p>
+                        )}
                         <p className="text-xs text-neutral-500 mt-1.5 ml-1">
                             {editingEntry ? 'Modificá el porcentaje registrado.' : 'Ingresá el porcentaje ejecutado hoy (0 a 100).'}
                         </p>
@@ -163,7 +272,13 @@ export function ProgressModal({ item, editingEntry = null, onClose, onSuccess })
                                     required
                                     className="w-full h-10 px-3 rounded-lg border border-gray-300 text-sm focus:border-[var(--accent)] focus:ring-[var(--accent)] outline-none"
                                     value={fechaInicio}
-                                    onChange={e => setFechaInicio(e.target.value)}
+                                    onChange={e => {
+                                        const next = e.target.value;
+                                        setFechaInicio(next);
+                                        // UX: al elegir "Desde", autocompletamos "Hasta" con la misma fecha.
+                                        setFechaFin(next);
+                                        updateWarning(next, next);
+                                    }}
                                 />
                             </div>
                             <div className="flex-1">
@@ -173,11 +288,21 @@ export function ProgressModal({ item, editingEntry = null, onClose, onSuccess })
                                     required
                                     className="w-full h-10 px-3 rounded-lg border border-gray-300 text-sm focus:border-[var(--accent)] focus:ring-[var(--accent)] outline-none"
                                     value={fechaFin}
-                                    onChange={e => setFechaFin(e.target.value)}
+                                    onChange={e => {
+                                        const next = e.target.value;
+                                        setFechaFin(next);
+                                        updateWarning(fechaInicio, next);
+                                    }}
                                 />
                             </div>
                         </div>
                     </div>
+
+                    {dateWarning && (
+                        <div className="bg-amber-50 text-amber-800 text-sm p-3 rounded-xl border border-amber-200">
+                            {dateWarning}
+                        </div>
+                    )}
 
                     <div>
                         <label className="block text-sm font-medium text-neutral-700 mb-1">Observaciones <span className="text-red-500">*</span></label>

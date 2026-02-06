@@ -59,17 +59,52 @@ function App() {
 
   const checkUserRole = async (userId) => {
     try {
-      const { data, error } = await supabase
-        .from('mobile_users')
-        .select('role, name') // FETCH NAME
+      // New schema (preferred): reports_users.role_mobile -> usuarios_roles.id
+      const { data: profile, error: profileError } = await supabase
+        .from('reports_users')
+        .select('name, role_mobile')
         .eq('id', userId)
         .maybeSingle();
 
-      if (data) {
-        setUserRole(data.role);
-        setUserName(data.name);
+      if (profileError) throw profileError;
+
+      if (profile) {
+        setUserName(profile.name);
+
+        if (profile.role_mobile) {
+          const { data: roleRow, error: roleError } = await supabase
+            .from('usuarios_roles')
+            .select('rol')
+            .eq('id', profile.role_mobile)
+            .maybeSingle();
+
+          if (roleError) throw roleError;
+
+          const roleName = roleRow?.rol ? String(roleRow.rol).toLowerCase() : null;
+          setUserRole(roleName || 'pending');
+          return;
+        }
+
+        // Auth exists + profile exists, but no role assigned yet
+        setUserRole('pending');
+        return;
       }
-      else setUserRole('pending'); // User Auth exists but not in mobile_users
+
+      // Fallback (legacy): mobile_users.role
+      const { data: legacy, error: legacyError } = await supabase
+        .from('mobile_users')
+        .select('role, name')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (legacyError) throw legacyError;
+
+      if (legacy) {
+        setUserRole(legacy.role);
+        setUserName(legacy.name);
+      } else {
+        setUserRole('pending'); // User Auth exists but not in any profile table
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -118,8 +153,8 @@ function App() {
   }
 
   // 3. Admin -> Dashboard
-  if (userRole === 'admin') {
-    return <AdminDashboard onLogout={handleLogout} />;
+  if (userRole === 'admin' || userRole === 'admin_gerencia') {
+    return <AdminDashboard onLogout={handleLogout} currentRole={userRole} />;
   }
 
   // 4. Engineer -> Project Selection / Items

@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { api } from '../services/api';
-import { Loader2, ArrowLeft, Ruler, ChevronDown, ChevronRight, FileText } from 'lucide-react';
+import { Loader2, ArrowLeft, Ruler, ChevronDown, ChevronRight, FileText, LineChart as LineChartIcon } from 'lucide-react';
 import { ProgressModal } from './ProgressModal';
 import { HistoryModal } from './HistoryModal';
+import { AvanceChartModal } from './AvanceChartModal';
 
 export function ItemsList({ project, onBack }) {
     const [items, setItems] = useState([]);
@@ -13,6 +14,23 @@ export function ItemsList({ project, onBack }) {
 
     // Unified Flow: Just selecting item to see history/add
     const [viewingHistoryItem, setViewingHistoryItem] = useState(null);
+    const [chartContext, setChartContext] = useState(null); // { title, subtitle, itemIds }
+
+    const qtyByItemId = useMemo(() => {
+        const map = {};
+        (items || []).forEach(r => {
+            if (r?.id && !r.grupo && !r.subgrupo) map[String(r.id)] = Number(r.cantidad) || 0;
+        });
+        return map;
+    }, [items]);
+
+    const unitByItemId = useMemo(() => {
+        const map = {};
+        (items || []).forEach(r => {
+            if (r?.id && !r.grupo && !r.subgrupo) map[String(r.id)] = r.unidad || null;
+        });
+        return map;
+    }, [items]);
 
     useEffect(() => {
         if (project?.id_licitacion) {
@@ -23,7 +41,14 @@ export function ItemsList({ project, onBack }) {
                 api.getActiveItemIds(project.id_licitacion)
             ])
                 .then(([itemsData, progressData]) => {
-                    setItems(itemsData);
+                    // Ensure every row carries the current project's licitacion id.
+                    // If it ever comes null/undefined from the view/table, progress inserts would fail.
+                    const normalizedItems = (itemsData || []).map((r) => ({
+                        ...r,
+                        id_licitacion: r?.id_licitacion ?? project.id_licitacion
+                    }));
+
+                    setItems(normalizedItems);
                     setProgressMap(progressData); // Now it's a Map
                     setLoading(false);
                 })
@@ -133,7 +158,38 @@ export function ItemsList({ project, onBack }) {
 
     const handleItemClick = (item) => {
         // Unified Flow: Always open history first, which allows adding
-        setViewingHistoryItem(item);
+        setViewingHistoryItem({
+            ...item,
+            id_licitacion: item?.id_licitacion ?? project?.id_licitacion
+        });
+    };
+
+    const openItemChart = (item) => {
+        setChartContext({
+            title: 'Avance (Estimado vs Real)',
+            subtitle: `${item?.item || ''} ${item?.descripcion || ''}`.trim(),
+            itemIds: [item.id]
+        });
+    };
+
+    const openGroupChart = (group) => {
+        const ids = [];
+        group?.directItems?.forEach(i => ids.push(i.id));
+        group?.subgroups?.forEach(s => s.items?.forEach(i => ids.push(i.id)));
+        setChartContext({
+            title: 'Avance por Grupo (Estimado vs Real)',
+            subtitle: group?.descripcion || '',
+            itemIds: ids
+        });
+    };
+
+    const openTotalChart = () => {
+        const ids = (items || []).filter(r => !r.grupo && !r.subgrupo).map(r => r.id);
+        setChartContext({
+            title: 'Avance General (Estimado vs Real)',
+            subtitle: project?.nombre_abreviado || '',
+            itemIds: ids
+        });
     };
 
     const refreshProgress = () => {
@@ -168,6 +224,14 @@ export function ItemsList({ project, onBack }) {
                         </h2>
                         <p className="text-xs text-[var(--muted)] truncate max-w-[250px]">{project?.nombre_abreviado}</p>
                     </div>
+                    <div className="flex-1" />
+                    <button
+                        onClick={openTotalChart}
+                        className="p-2 text-neutral-500 hover:text-[var(--accent)] rounded-full hover:bg-neutral-100"
+                        title="Ver gráfico general"
+                    >
+                        <LineChartIcon className="w-5 h-5" />
+                    </button>
                 </div>
 
                 {/* Search Bar */}
@@ -205,13 +269,24 @@ export function ItemsList({ project, onBack }) {
                                     <span className="uppercase tracking-wide truncate">{group.descripcion}</span>
                                 </div>
 
-                                {group.isComplete ? (
-                                    <span className="bg-green-100 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-green-200 shrink-0 ml-2">
-                                        COMPLETO
-                                    </span>
-                                ) : group.hasProgress && (
-                                    <span className="w-2 h-2 rounded-full bg-green-500 shrink-0 ml-2 shadow-sm"></span>
-                                )}
+                                <div className="flex items-center gap-2 shrink-0 ml-2">
+                                    <button
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); openGroupChart(group); }}
+                                        className="p-1.5 rounded-md border border-neutral-200 bg-white text-neutral-600 hover:text-[var(--accent)] hover:border-[var(--accent)]"
+                                        title="Ver gráfico del grupo"
+                                    >
+                                        <LineChartIcon className="w-4 h-4" />
+                                    </button>
+
+                                    {group.isComplete ? (
+                                        <span className="bg-green-100 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-green-200 shrink-0">
+                                            COMPLETO
+                                        </span>
+                                    ) : group.hasProgress && (
+                                        <span className="w-2 h-2 rounded-full bg-green-500 shrink-0 shadow-sm"></span>
+                                    )}
+                                </div>
                             </button>
 
                             {/* Group Content */}
@@ -219,7 +294,7 @@ export function ItemsList({ project, onBack }) {
                                 <div className="bg-white pb-2">
                                     {/* Direct Items */}
                                     {group.directItems && group.directItems.map(item => (
-                                        <ItemRow key={item.id} item={item} onClick={() => handleItemClick(item)} />
+                                        <ItemRow key={item.id} item={item} onClick={() => handleItemClick(item)} onChart={() => openItemChart(item)} />
                                     ))}
 
                                     {/* Level 2: Subgroups */}
@@ -243,7 +318,7 @@ export function ItemsList({ project, onBack }) {
                                             {/* Level 3: Subgroup Items */}
                                             <div className="divide-y divide-[var(--border-hair)]">
                                                 {subgroup.items && subgroup.items.map(item => (
-                                                    <ItemRow key={item.id} item={item} onClick={() => handleItemClick(item)} />
+                                                    <ItemRow key={item.id} item={item} onClick={() => handleItemClick(item)} onChart={() => openItemChart(item)} />
                                                 ))}
                                             </div>
                                         </div>
@@ -262,11 +337,23 @@ export function ItemsList({ project, onBack }) {
                     onUpdate={refreshProgress}
                 />
             )}
+
+            {chartContext && (
+                <AvanceChartModal
+                    licitacionId={project?.id_licitacion}
+                    itemIds={chartContext.itemIds}
+                    qtyByItemId={qtyByItemId}
+                    unitByItemId={unitByItemId}
+                    title={chartContext.title}
+                    subtitle={chartContext.subtitle}
+                    onClose={() => setChartContext(null)}
+                />
+            )}
         </div>
     );
 }
 
-function ItemRow({ item, onClick }) {
+function ItemRow({ item, onClick, onChart }) {
     return (
         <div
             onClick={onClick}
@@ -278,13 +365,24 @@ function ItemRow({ item, onClick }) {
                     <span className="text-sm text-neutral-700 leading-snug">{item.descripcion}</span>
                 </div>
 
-                {item.isComplete ? (
-                    <span className="bg-green-100 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-green-200 shrink-0 shadow-sm">
-                        COMPLETO
-                    </span>
-                ) : item.hasProgress && (
-                    <span className="w-2.5 h-2.5 rounded-full bg-green-500 shrink-0 shadow-sm border border-white"></span>
-                )}
+                <div className="flex items-center gap-2 shrink-0">
+                    <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onChart?.(); }}
+                        className="p-1.5 rounded-md border border-neutral-200 bg-white text-neutral-600 hover:text-[var(--accent)] hover:border-[var(--accent)]"
+                        title="Ver gráfico"
+                    >
+                        <LineChartIcon className="w-4 h-4" />
+                    </button>
+
+                    {item.isComplete ? (
+                        <span className="bg-green-100 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-green-200 shadow-sm">
+                            COMPLETO
+                        </span>
+                    ) : item.hasProgress && (
+                        <span className="w-2.5 h-2.5 rounded-full bg-green-500 shadow-sm border border-white"></span>
+                    )}
+                </div>
             </div>
             <div className="pl-[38px] flex items-center gap-4 text-xs text-[var(--muted)]">
                 <span className="flex items-center gap-1 bg-neutral-50 px-2 py-0.5 rounded border border-neutral-100">

@@ -1,14 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../services/supabase';
 import { api } from '../services/api';
-import { createClient } from '@supabase/supabase-js';
-import { Users, Shield, Plus, X, Loader2, LogOut, Search, UserPlus, CheckCircle2, Bell, BarChart2, Briefcase } from 'lucide-react';
+import { Users, Shield, Plus, X, Loader2, LogOut, Search, UserPlus, CheckCircle2, Bell, BarChart2, Settings, Eye, EyeOff } from 'lucide-react';
 import { AdminMetrics } from './admin/AdminMetrics';
 import { NotificationFeed } from './admin/NotificationFeed';
 import { ProjectDetailDashboard } from './admin/ProjectDetailDashboard';
-import { RoleManager } from './admin/RoleManager';
 
-export function AdminDashboard({ onLogout }) {
+export function AdminDashboard({ onLogout, currentRole }) {
     const [showUserList, setShowUserList] = useState(false);
     const [showCreateUser, setShowCreateUser] = useState(false);
     const [showNotifications, setShowNotifications] = useState(false);
@@ -19,7 +17,6 @@ export function AdminDashboard({ onLogout }) {
     // Persistence: Initialize from localStorage
     const [selectedProject, setSelectedProject] = useState(() => localStorage.getItem('bencen_admin_project') || '');
     const [showDetailed, setShowDetailed] = useState(() => localStorage.getItem('bencen_admin_showDetailed') === 'true');
-    const [showRoles, setShowRoles] = useState(false);
 
     // Persistence: Save to localStorage
     useEffect(() => {
@@ -118,7 +115,7 @@ export function AdminDashboard({ onLogout }) {
             <div className="flex-1 p-4 md:p-6 w-full mx-auto space-y-6">
 
                 {/* Action Cards */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <ActionCard
                         icon={Users}
                         title="Gestionar Usuarios"
@@ -129,16 +126,9 @@ export function AdminDashboard({ onLogout }) {
                     <ActionCard
                         icon={UserPlus}
                         title="Alta de Usuario"
-                        desc="Crear nuevo admin o ingeniero"
+                        desc="Asignar rol a nuevos usuarios"
                         onClick={() => setShowCreateUser(true)}
                         color="bg-purple-600"
-                    />
-                    <ActionCard
-                        icon={Briefcase}
-                        title="Gestionar Roles"
-                        desc="Definir perfiles dinámicos"
-                        onClick={() => setShowRoles(true)}
-                        color="bg-orange-600"
                     />
                 </div>
 
@@ -171,9 +161,14 @@ export function AdminDashboard({ onLogout }) {
             </div>
 
             {/* Modals */}
-            {showUserList && <UserListModal onClose={() => setShowUserList(false)} />}
-            {showCreateUser && <CreateUserModal onClose={() => setShowCreateUser(false)} />}
-            {showRoles && <RoleManager onClose={() => setShowRoles(false)} />}
+            {showUserList && <UserListModal onClose={() => setShowUserList(false)} currentRole={currentRole} />}
+            {showCreateUser && (
+                <CreateUserModal
+                    onClose={() => setShowCreateUser(false)}
+                    onSuccess={() => setRefreshTrigger(x => x + 1)}
+                    currentRole={currentRole}
+                />
+            )}
         </div>
     );
 }
@@ -197,164 +192,527 @@ function ActionCard({ icon: Icon, title, desc, onClick, color }) {
 
 // --- MODALS ---
 
-function CreateUserModal({ onClose }) {
-    const [email, setEmail] = useState('');
-    const [password, setPassword] = useState('');
-    const [name, setName] = useState('');
-    const [role, setRole] = useState('engineer');
-    const [loading, setLoading] = useState(false);
-    const [availableRoles, setAvailableRoles] = useState([]);
+function CreateUserModal({ onClose, onSuccess, currentRole }) {
+    const [users, setUsers] = useState([]);
+    const [roles, setRoles] = useState([]);
+
+    const [selectedUserId, setSelectedUserId] = useState('');
+    const [selectedRoleId, setSelectedRoleId] = useState('');
+    const [supportsApproval, setSupportsApproval] = useState(true);
+    const [showGerenciaSettings, setShowGerenciaSettings] = useState(false);
+    const [reloadKey, setReloadKey] = useState(0);
+    const [gerenciaShowAllPending, setGerenciaShowAllPending] = useState(false);
+
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState(null);
+
+    const isGerencia = currentRole === 'admin_gerencia';
 
     useEffect(() => {
-        api.getRoles().then(data => setAvailableRoles(data || []));
-    }, []);
+        let cancelled = false;
+
+        const load = async () => {
+            setLoading(true);
+            setError(null);
+            try {
+                const fetchUsers = async () => {
+                    // Prefer to include approval flag, but keep backwards-compat if the column doesn't exist yet.
+                    const res = await supabase
+                        .from('reports_users')
+                        .select('id, email, name, role_mobile, mobile_admin_visible')
+                        .order('name', { ascending: true, nullsFirst: false });
+
+                    if (!res.error) return { ...res, supportsApproval: true };
+
+                    const msg = String(res.error?.message || '');
+                    if (msg.toLowerCase().includes('mobile_admin_visible')) {
+                        const fallback = await supabase
+                            .from('reports_users')
+                            .select('id, email, name, role_mobile')
+                            .order('name', { ascending: true, nullsFirst: false });
+                        return { ...fallback, supportsApproval: false };
+                    }
+
+                    return { ...res, supportsApproval: true };
+                };
+
+                const [uRes, rRes] = await Promise.all([
+                    fetchUsers(),
+                    supabase
+                        .from('usuarios_roles')
+                        .select('id, rol')
+                        .in('rol', ['admin', 'admin_gerencia', 'engineer', 'sobrestante'])
+                        .order('id', { ascending: true }),
+                ]);
+
+                const u = uRes.data;
+                const uErr = uRes.error;
+                const r = rRes.data;
+                const rErr = rRes.error;
+
+                if (uErr) throw uErr;
+                if (rErr) throw rErr;
+
+                if (cancelled) return;
+                setUsers(u || []);
+                setRoles(r || []);
+                setSupportsApproval(Boolean(uRes.supportsApproval));
+
+                const pending = (u || []).filter(x => !x.role_mobile);
+                const approvalEnabled = Boolean(uRes.supportsApproval);
+                const candidates = (() => {
+                    if (!approvalEnabled) return pending;
+                    if (isGerencia) {
+                        if (gerenciaShowAllPending) return pending;
+                        return pending.filter(x => x.mobile_admin_visible === true);
+                    }
+                    return pending.filter(x => x.mobile_admin_visible === true);
+                })();
+
+                // Only set default selection if:
+                // - nothing selected yet, OR
+                // - selected user is no longer pending, OR
+                // - selected user isn't in the currently visible candidates list
+                const selectedIsPending = pending.some(x => String(x.id) === String(selectedUserId));
+                const selectedIsCandidate = candidates.some(x => String(x.id) === String(selectedUserId));
+                if (!selectedUserId || !selectedIsPending || !selectedIsCandidate) {
+                    setSelectedUserId(candidates[0]?.id ? String(candidates[0].id) : '');
+                }
+
+                const engineer = (r || []).find(x => String(x.rol).toLowerCase() === 'engineer');
+                if ((!selectedRoleId || selectedRoleId === '') && engineer) setSelectedRoleId(String(engineer.id));
+            } catch (e) {
+                console.error(e);
+                if (!cancelled) setError(e?.message || 'Error cargando datos.');
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        };
+
+        load();
+        return () => {
+            cancelled = true;
+        };
+    }, [reloadKey]);
+
+    // Alta: mostrar solo usuarios nuevos (sin rol asignado)
+    const pendingUsers = users.filter(u => !u.role_mobile);
+    const visibleUsers = (() => {
+        // Para que Gerencia pueda corroborar el efecto del checkbox, por defecto mostramos
+        // la misma "vista admin": solo los habilitados.
+        if (isGerencia) {
+            if (!supportsApproval) return pendingUsers;
+            if (gerenciaShowAllPending) return pendingUsers;
+            return pendingUsers.filter(u => u.mobile_admin_visible === true);
+        }
+        if (!supportsApproval) return pendingUsers; // fallback until DB column exists
+        return pendingUsers.filter(u => u.mobile_admin_visible === true);
+    })();
+
+    const selectedUser = users.find(u => String(u.id) === String(selectedUserId)) || null;
+    const selectedUserLabel = selectedUser ? (selectedUser.name || selectedUser.email || selectedUser.id) : '';
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        setLoading(true);
+        setError(null);
+
+        if (!selectedUserId) {
+            setError('Selecciona un usuario.');
+            return;
+        }
+        if (!visibleUsers.some(u => String(u.id) === String(selectedUserId))) {
+            setError('El usuario seleccionado ya no estÃ¡ disponible en esta lista. VolvÃ© a seleccionarlo.');
+            return;
+        }
+        if (!selectedRoleId) {
+            setError('Selecciona un rol.');
+            return;
+        }
+
+        setSaving(true);
         try {
-            // Use temporary client to not mess with Admin session
-            const tempSupabase = createClient(
-                import.meta.env.VITE_SUPABASE_URL,
-                import.meta.env.VITE_SUPABASE_ANON_KEY,
-                { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } }
-            );
+            const { error: upErr } = await supabase
+                .from('reports_users')
+                // Ensure it shows up in Admin "Gestion de Usuarios" list even if it was previously hidden.
+                .update({ role_mobile: Number(selectedRoleId), mobile_manage_visible: true })
+                .eq('id', selectedUserId);
 
-            const { data, error } = await tempSupabase.auth.signUp({
-                email,
-                password,
-                options: {
-                    data: { full_name: name, role: role } // Use Role State
-                }
-            });
+            if (upErr) throw upErr;
 
-            if (error) throw error;
-
-            if (data?.user) {
-                // Manually create profile in mobile_users using the ADMIN client (supabase)
-                const { error: profileError } = await supabase
-                    .from('mobile_users')
-                    .insert([{
-                        id: data.user.id,
-                        email: email,
-                        name: name,
-                        role: role // Use Role State
-                    }]);
-
-                if (profileError) {
-                    console.error("Profile Error:", profileError);
-                    // Check if it's a duplicate or constraint error
-                    if (profileError.code === '23505') { // Unique violation
-                        alert("El usuario Auth se creó, pero el perfil ya existía.");
-                        onClose();
-                    } else {
-                        alert("Se creó el login pero falló el perfil: " + profileError.message);
-                    }
-                } else {
-                    alert("Usuario creado correctamente!");
-                    onClose();
-                }
-            }
-        } catch (err) {
-            console.error(err);
-            alert("Error: " + err.message);
+            if (onSuccess) onSuccess();
+            alert('Usuario habilitado correctamente.');
+            onClose();
+        } catch (e) {
+            console.error(e);
+            setError(e?.message || 'Error al habilitar usuario.');
         } finally {
-            setLoading(false);
+            setSaving(false);
         }
     };
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6">
                 <div className="flex justify-between items-center mb-6">
                     <h3 className="font-bold text-xl text-neutral-900">Alta de Usuario</h3>
-                    <button onClick={onClose}><X className="w-6 h-6 text-neutral-400 hover:text-neutral-800" /></button>
+                    <div className="flex items-center gap-2">
+                        {isGerencia && (
+                            <button
+                                type="button"
+                                onClick={() => setShowGerenciaSettings(true)}
+                                className="p-2 rounded-full text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100 transition-colors"
+                                title="Ajustes (admin_gerencia)"
+                            >
+                                <Settings className="w-5 h-5" />
+                            </button>
+                        )}
+                        <button onClick={onClose}><X className="w-6 h-6 text-neutral-400 hover:text-neutral-800" /></button>
+                    </div>
                 </div>
-                <form onSubmit={handleSubmit} className="space-y-4">
 
-                    {/* Role Selector */}
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Rol del Usuario</label>
-                        {availableRoles.length > 0 ? (
-                            <div className="grid grid-cols-2 gap-3">
-                                {availableRoles.map(r => (
+                {loading ? (
+                    <div className="py-10 flex justify-center">
+                        <Loader2 className="w-6 h-6 animate-spin text-orange-500" />
+                    </div>
+                ) : (
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <div className="flex items-center justify-between mb-2">
+                                <label className="block text-sm font-medium text-gray-700">Usuario</label>
+                                {isGerencia && supportsApproval && (
                                     <button
-                                        key={r.name}
                                         type="button"
-                                        onClick={() => setRole(r.name)}
-                                        className={`h-10 rounded-lg border text-sm font-bold transition-all capitalize ${role === r.name ? 'bg-orange-50 border-orange-500 text-orange-700 ring-1 ring-orange-500 shadow-sm' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                                        onClick={() => setGerenciaShowAllPending(v => !v)}
+                                        className="text-xs font-bold text-neutral-500 hover:text-orange-600"
+                                        title="Cambiar vista"
                                     >
-                                        {r.name}
+                                        {gerenciaShowAllPending ? 'Vista admin' : 'Ver todos'}
                                     </button>
-                                ))}
+                                )}
                             </div>
-                        ) : (
-                            <div className="grid grid-cols-2 gap-3">
-                                <button
-                                    type="button"
-                                    onClick={() => setRole('engineer')}
-                                    className={`h-10 rounded-lg border text-sm font-bold transition-all ${role === 'engineer' ? 'bg-orange-50 border-orange-500 text-orange-700 ring-1 ring-orange-500 shadow-sm' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}
-                                >
-                                    Ingeniero
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setRole('admin')}
-                                    className={`h-10 rounded-lg border text-sm font-bold transition-all ${role === 'admin' ? 'bg-purple-50 border-purple-500 text-purple-700 ring-1 ring-purple-500 shadow-sm' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}
-                                >
-                                    Admin
-                                </button>
+                            <select
+                                value={selectedUserId}
+                                onChange={(e) => setSelectedUserId(e.target.value)}
+                                title={selectedUserLabel}
+                                className="w-full h-12 px-3 rounded-xl border border-gray-300 bg-white focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 outline-none transition-all text-[13px]"
+                                required
+                            >
+                                <option value="" disabled>Selecciona un usuario...</option>
+                                {visibleUsers.map(u => (
+                                    <option key={u.id} value={u.id}>
+                                        {u.name || u.email || '(Sin nombre)'}
+                                    </option>
+                                ))}
+                            </select>
+
+                            {visibleUsers.length === 0 && (
+                                <p className="text-xs text-neutral-400 mt-2">
+                                    {isGerencia
+                                        ? 'No hay usuarios pendientes en reports_users.'
+                                        : (supportsApproval
+                                            ? 'No hay usuarios habilitados por Gerencia para asignar rol.'
+                                            : 'No hay usuarios pendientes en reports_users. (Falta configurar aprobaciones de Gerencia)')}
+                                </p>
+                            )}
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Rol (Mobile)</label>
+                            <select
+                                value={selectedRoleId}
+                                onChange={(e) => setSelectedRoleId(e.target.value)}
+                                className="w-full h-12 px-3 rounded-xl border border-gray-300 bg-white focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 outline-none transition-all text-sm capitalize"
+                                required
+                            >
+                                <option value="" disabled>Selecciona un rol...</option>
+                                {roles.map(r => (
+                                    <option key={r.id} value={r.id}>
+                                        {r.rol}
+                                    </option>
+                                ))}
+                            </select>
+                            {isGerencia && supportsApproval && (
+                                <p className="text-[11px] text-neutral-400 mt-2">
+                                    Tip: usÃ¡ la ruedita para habilitar/ocultar usuarios en el alta.
+                                </p>
+                            )}
+                        </div>
+
+                        {error && (
+                            <div className="bg-red-50 text-red-700 text-sm p-3 rounded-xl border border-red-100">
+                                {error}
                             </div>
                         )}
-                    </div>
 
-                    <input type="text" placeholder="Nombre Completo" value={name} onChange={e => setName(e.target.value)} required className="w-full h-12 px-4 rounded-xl border border-gray-300 focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 outline-none transition-all" />
-                    <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} required className="w-full h-12 px-4 rounded-xl border border-gray-300 focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 outline-none transition-all" />
-                    <input type="text" placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} required className="w-full h-12 px-4 rounded-xl border border-gray-300 focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 outline-none transition-all" />
-
-                    <button type="submit" disabled={loading} className="w-full h-12 bg-neutral-900 text-white font-bold rounded-xl hover:bg-black transition-colors flex items-center justify-center gap-2">
-                        {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Crear Usuario"}
-                    </button>
-                </form>
+                        <button
+                            type="submit"
+                            disabled={saving || visibleUsers.length === 0}
+                            className="w-full h-12 bg-neutral-900 text-white font-bold rounded-xl hover:bg-black transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
+                        >
+                            {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Habilitar Usuario'}
+                        </button>
+                    </form>
+                )}
             </div>
+
+            {showGerenciaSettings && (
+                <AdminGerenciaSettingsModal
+                    onClose={() => setShowGerenciaSettings(false)}
+                    onUpdated={() => {
+                        setReloadKey(x => x + 1);
+                        if (onSuccess) onSuccess();
+                    }}
+                    onVisibilityChange={(userId, visible) => {
+                        setUsers(prev => prev.map(u => String(u.id) === String(userId) ? { ...u, mobile_admin_visible: Boolean(visible) } : u));
+                    }}
+                />
+            )}
         </div>
     );
 }
 
-function UserListModal({ onClose }) {
+function AdminGerenciaSettingsModal({ onClose, onUpdated, onVisibilityChange }) {
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [pending, setPending] = useState([]);
+    const [savingId, setSavingId] = useState(null);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const load = async () => {
+            setLoading(true);
+            setError(null);
+            try {
+                const res = await supabase
+                    .from('reports_users')
+                    .select('id, email, name, role_mobile, mobile_admin_visible')
+                    .order('name', { ascending: true, nullsFirst: false });
+
+                if (res.error) throw res.error;
+
+                if (cancelled) return;
+                setPending((res.data || []).filter(u => !u.role_mobile));
+            } catch (e) {
+                console.error(e);
+                const msg = String(e?.message || 'Error cargando usuarios.');
+                setError(msg);
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        };
+
+        load();
+        return () => { cancelled = true; };
+    }, []);
+
+    const setApproved = async (userId, approved) => {
+        setSavingId(String(userId));
+        try {
+            const { error: upErr } = await supabase
+                .from('reports_users')
+                .update({ mobile_admin_visible: Boolean(approved) })
+                .eq('id', userId);
+
+            if (upErr) throw upErr;
+
+            setPending(prev => prev.map(u => String(u.id) === String(userId) ? { ...u, mobile_admin_visible: Boolean(approved) } : u));
+            if (onVisibilityChange) onVisibilityChange(userId, approved);
+            if (onUpdated) onUpdated();
+        } catch (e) {
+            console.error(e);
+            alert('Error: ' + (e?.message || 'No se pudo actualizar.'));
+        } finally {
+            setSavingId(null);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
+                <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                    <div>
+                        <h3 className="font-bold text-neutral-900">Ajustes de Gerencia</h3>
+                        <p className="text-xs text-neutral-500">ElegÃ­ quÃ© usuarios aparecen en el alta de Admin.</p>
+                    </div>
+                    <button onClick={onClose}><X className="w-6 h-6 text-neutral-400 hover:text-neutral-800" /></button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4 bg-white space-y-2">
+                    {loading ? (
+                        <div className="py-10 flex justify-center">
+                            <Loader2 className="w-6 h-6 animate-spin text-orange-500" />
+                        </div>
+                    ) : error ? (
+                        <div className="bg-red-50 text-red-700 text-sm p-3 rounded-xl border border-red-100">
+                            {error}
+                            <div className="text-xs text-red-600 mt-2">
+                            Falta la columna `reports_users.mobile_admin_visible`.
+                            </div>
+                        </div>
+                    ) : pending.length === 0 ? (
+                        <div className="text-sm text-neutral-500">No hay usuarios pendientes.</div>
+                    ) : (
+                        pending.map(u => (
+                            <div key={u.id} className="p-3 rounded-xl border border-gray-200 flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                    <div className="font-bold text-sm text-neutral-900 truncate">{u.name || '(Sin nombre)'}</div>
+                                    <div className="text-xs text-neutral-500 truncate">{u.email}</div>
+                                </div>
+
+                                <label className="flex items-center gap-2 shrink-0 text-xs font-bold text-neutral-700">
+                                    <input
+                                        type="checkbox"
+                                        checked={u.mobile_admin_visible === true}
+                                        disabled={savingId === String(u.id)}
+                                        onChange={(e) => setApproved(u.id, e.target.checked)}
+                                        className="w-4 h-4 accent-orange-600"
+                                    />
+                                    Habilitar
+                                </label>
+                            </div>
+                        ))
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+function UserListModal({ onClose, currentRole }) {
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
     const [selectedUser, setSelectedUser] = useState(null);
     const [availableRoles, setAvailableRoles] = useState([]);
+    const [removingUserId, setRemovingUserId] = useState(null);
+    const [visibilitySavingId, setVisibilitySavingId] = useState(null);
+    const [supportsManageVisibility, setSupportsManageVisibility] = useState(true);
+
+    const isGerencia = currentRole === 'admin_gerencia';
 
     useEffect(() => {
         fetchUsers();
-        api.getRoles().then(data => setAvailableRoles(data || []));
+        supabase
+            .from('usuarios_roles')
+            .select('id, rol')
+            .in('rol', ['admin', 'admin_gerencia', 'engineer', 'sobrestante'])
+            .order('id', { ascending: true })
+            .then(({ data, error }) => {
+                if (error) throw error;
+                setAvailableRoles(data || []);
+            })
+            .catch(err => console.error(err));
     }, []);
 
     const fetchUsers = async () => {
-        const { data } = await supabase.from('mobile_users').select('*').order('name');
-        setUsers(data || []);
+        const primary = await supabase
+            .from('reports_users')
+            .select('id, email, name, role_mobile, mobile_manage_visible')
+            .not('role_mobile', 'is', null) // Gestion: solo usuarios activos (con rol asignado)
+            .order('name', { ascending: true, nullsFirst: false });
+
+        if (!primary.error) {
+            const rows = primary.data || [];
+            // Admin: solo ve los que Gerencia dejo visibles. Gerencia: ve todos.
+            setUsers(isGerencia ? rows : rows.filter(u => u.mobile_manage_visible !== false));
+            setSupportsManageVisibility(true);
+            setLoading(false);
+            return;
+        }
+
+        const msg = String(primary.error?.message || '');
+        if (msg.toLowerCase().includes('mobile_manage_visible')) {
+            const fallback = await supabase
+                .from('reports_users')
+                .select('id, email, name, role_mobile')
+                .not('role_mobile', 'is', null)
+                .order('name', { ascending: true, nullsFirst: false });
+            setUsers(fallback.data || []);
+            setSupportsManageVisibility(false);
+            setLoading(false);
+            return;
+        }
+
+        console.error(primary.error);
+        setUsers([]);
         setLoading(false);
     };
 
     // ... inside UserListModal component ...
-    const changeRole = async (userId, newRole) => {
+    const changeRole = async (userId, newRoleId) => {
         // Confirmation is optional but safe
         // if (!window.confirm(`¿Cambiar rol a ${newRole}?`)) return;
 
         try {
             const { error } = await supabase
-                .from('mobile_users')
-                .update({ role: newRole })
+                .from('reports_users')
+                .update({ role_mobile: Number(newRoleId) })
                 .eq('id', userId);
 
             if (error) throw error;
 
-            setUsers(users.map(u => u.id === userId ? { ...u, role: newRole } : u));
+            setUsers(users.map(u => u.id === userId ? { ...u, role_mobile: Number(newRoleId) } : u));
         } catch (err) {
             console.error(err);
             alert("Error al actualizar rol: " + err.message);
+        }
+    };
+
+    const removeMobileAssignments = async (u) => {
+        if (!u?.id) return;
+        const label = u.name || u.email || 'este usuario';
+        if (!window.confirm(`¿Quitar rol y permisos de obras a ${label}?`)) return;
+
+        setRemovingUserId(String(u.id));
+        try {
+            const { error: delErr } = await supabase
+                .from('reports_users_licitaciones')
+                .delete()
+                .eq('user_id', u.id);
+            if (delErr) throw delErr;
+
+            const { error: updErr } = await supabase
+                .from('reports_users')
+                .update({ role_mobile: null, mobile_admin_visible: false })
+                .eq('id', u.id);
+            if (updErr) throw updErr;
+
+            if (selectedUser?.id === u.id) setSelectedUser(null);
+            await fetchUsers();
+        } catch (err) {
+            console.error(err);
+            alert("Error al quitar asignaciones: " + (err?.message || 'Error'));
+        } finally {
+            setRemovingUserId(null);
+        }
+    };
+
+    const toggleManageVisibility = async (u) => {
+        if (!u?.id) return;
+        if (!supportsManageVisibility) {
+            alert("Falta la columna reports_users.mobile_manage_visible en la base.");
+            return;
+        }
+
+        const next = !(u.mobile_manage_visible === true);
+        setVisibilitySavingId(String(u.id));
+        try {
+            const { error } = await supabase
+                .from('reports_users')
+                .update({ mobile_manage_visible: next })
+                .eq('id', u.id);
+            if (error) throw error;
+
+            // Gerencia ve todos (solo cambia el icono). Admin ve filtrado.
+            setUsers(prev => {
+                const updated = prev.map(x => String(x.id) === String(u.id) ? { ...x, mobile_manage_visible: next } : x);
+                return isGerencia ? updated : updated.filter(x => x.mobile_manage_visible !== false);
+            });
+        } catch (err) {
+            console.error(err);
+            alert("Error: " + (err?.message || 'No se pudo actualizar visibilidad.'));
+        } finally {
+            setVisibilitySavingId(null);
         }
     };
 
@@ -377,30 +735,74 @@ function UserListModal({ onClose }) {
                                         <p className="font-bold text-neutral-900">{u.name}</p>
                                         <p className="text-sm text-neutral-500">{u.email}</p>
                                     </div>
-                                    <div className="flex items-center gap-3">
-                                        {/* Role Selector */}
-                                        <select
-                                            value={u.role}
-                                            onChange={(e) => changeRole(u.id, e.target.value)}
-                                            className={`text-xs uppercase font-bold px-3 py-1.5 rounded-lg border outline-none cursor-pointer appearance-none text-center min-w-[90px] ${u.role === 'admin' ? 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100' : 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'}`}
-                                        >
-                                            {availableRoles.length > 0 ? (
-                                                availableRoles.map(r => (
-                                                    <option key={r.name} value={r.name}>{r.name}</option>
-                                                ))
-                                            ) : (
-                                                <>
-                                                    <option value="engineer">Ingeniero</option>
-                                                    <option value="admin">Admin</option>
-                                                </>
-                                            )}
-                                        </select>
+                                    <div className="flex items-center gap-2 shrink-0 ml-4">
+                                        {(() => {
+                                            const roleName = String(availableRoles.find(r => String(r.id) === String(u.role_mobile))?.rol || '').toLowerCase();
+                                            const canEditPerms = roleName !== 'admin' && roleName !== 'admin_gerencia';
 
-                                        {u.role !== 'admin' && (
-                                            <button onClick={() => setSelectedUser(u)} className="px-4 py-1.5 bg-white border border-gray-200 shadow-sm rounded-lg text-xs font-bold text-neutral-700 hover:bg-gray-50 h-8">
-                                                Permisos
-                                            </button>
-                                        )}
+                                            return (
+                                                <>
+                                                    {/* Solo Gerencia puede ocultar usuarios de la lista de Admin */}
+                                                    {isGerencia && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => toggleManageVisibility(u)}
+                                                            disabled={visibilitySavingId === String(u.id)}
+                                                            className={`h-9 w-9 rounded-lg border transition-colors flex items-center justify-center disabled:opacity-60 ${u.mobile_manage_visible === false
+                                                                ? 'border-gray-200 text-gray-400 bg-gray-50 hover:bg-gray-100'
+                                                                : 'border-neutral-200 text-neutral-700 bg-white hover:bg-neutral-50'
+                                                                }`}
+                                                            title={u.mobile_manage_visible === false ? 'Oculto para Admin' : 'Visible para Admin'}
+                                                            aria-label="Visibilidad en lista de admin"
+                                                        >
+                                                            {visibilitySavingId === String(u.id)
+                                                                ? <Loader2 className="w-4 h-4 animate-spin" />
+                                                                : (u.mobile_manage_visible === false ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />)}
+                                                        </button>
+                                                    )}
+
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => canEditPerms && setSelectedUser(u)}
+                                                        disabled={!canEditPerms}
+                                                        className={`h-9 w-[120px] rounded-lg text-xs font-bold border shadow-sm transition-colors ${canEditPerms
+                                                            ? 'border-green-300 text-green-700 bg-green-50 hover:bg-green-100'
+                                                            : 'border-gray-200 text-gray-300 bg-gray-50 cursor-not-allowed'
+                                                            }`}
+                                                    >
+                                                        Permisos
+                                                    </button>
+
+                                                    {/* Role Selector */}
+                                                    <select
+                                                        value={u.role_mobile ? String(u.role_mobile) : ''}
+                                                        onChange={(e) => changeRole(u.id, e.target.value)}
+                                                        className="h-9 w-[120px] text-xs font-bold uppercase px-3 rounded-lg border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 outline-none cursor-pointer appearance-none text-center"
+                                                        aria-label="Rol Mobile"
+                                                    >
+                                                        <option value="" disabled>SIN ROL</option>
+                                                        {availableRoles.map(r => (
+                                                            <option key={r.id} value={r.id}>{r.rol}</option>
+                                                        ))}
+                                                    </select>
+
+                                                    {isGerencia && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => removeMobileAssignments(u)}
+                                                            disabled={removingUserId === String(u.id)}
+                                                            className="h-9 w-9 rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 transition-colors flex items-center justify-center disabled:opacity-60"
+                                                            title="Quitar rol y permisos (volver a pendientes)"
+                                                            aria-label="Quitar asignaciones"
+                                                        >
+                                                            {removingUserId === String(u.id)
+                                                                ? <Loader2 className="w-4 h-4 animate-spin" />
+                                                                : <X className="w-4 h-4" />}
+                                                        </button>
+                                                    )}
+                                                </>
+                                            );
+                                        })()}
                                     </div>
                                 </div>
                             ))}
@@ -423,20 +825,38 @@ function PermissionsModal({ user, onClose }) {
     const loadData = async () => {
         try {
             const { data: allProjects } = await supabase.from('datos_licitaciones').select('id_licitacion, nombre_abreviado').eq('obra_activa', true).order('nombre_abreviado');
-            const { data: perms } = await supabase.from('mobile_permissions').select('licitacion_id').eq('user_id', user.id);
+            const { data: perms } = await supabase.from('reports_users_licitaciones').select('licitacion_id').eq('user_id', user.id);
             setProjects(allProjects || []);
-            setUserPermissions(new Set(perms?.map(p => p.licitacion_id) || []));
+            // Normalize to string to avoid Set.has mismatches (number vs string ids)
+            setUserPermissions(new Set((perms || []).map(p => String(p.licitacion_id))));
             setLoading(false);
         } catch (err) { console.error(err); setLoading(false); }
     };
 
     const toggle = async (licitacionId) => {
+        const key = String(licitacionId);
         const newSet = new Set(userPermissions);
-        if (newSet.has(licitacionId)) newSet.delete(licitacionId); else newSet.add(licitacionId);
+        if (newSet.has(key)) newSet.delete(key); else newSet.add(key);
         setUserPermissions(newSet);
-        try { await supabase.rpc('toggle_permission', { target_user_id: user.id, target_licitacion_id: licitacionId }); }
-        catch (err) { console.error(err); alert("Error"); loadData(); }
+        try {
+            const { error } = await supabase.rpc('toggle_permission', {
+                target_user_id: user.id,
+                target_licitacion_id: licitacionId
+            });
+            if (error) throw error;
+        } catch (err) {
+            console.error(err);
+            alert("Error: " + (err?.message || 'No se pudo actualizar el permiso.'));
+            loadData();
+        }
     };
+
+    const sortedProjects = [...projects].sort((a, b) => {
+        const aAllowed = userPermissions.has(String(a.id_licitacion));
+        const bAllowed = userPermissions.has(String(b.id_licitacion));
+        if (aAllowed !== bAllowed) return aAllowed ? -1 : 1; // asignadas primero
+        return String(a.nombre_abreviado || '').localeCompare(String(b.nombre_abreviado || ''), 'es', { sensitivity: 'base' });
+    });
 
     return (
         <div className="absolute inset-0 z-[60] flex items-center justify-center bg-white/50 backdrop-blur-sm p-4 animate-in fade-in">
@@ -446,10 +866,14 @@ function PermissionsModal({ user, onClose }) {
                     <button onClick={onClose}><X className="w-4 h-4" /></button>
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                    {loading ? <Loader2 className="animate-spin mx-auto" /> : projects.map(p => {
-                        const allowed = userPermissions.has(p.id_licitacion);
+                    {loading ? <Loader2 className="animate-spin mx-auto" /> : sortedProjects.map(p => {
+                        const allowed = userPermissions.has(String(p.id_licitacion));
                         return (
-                            <button key={p.id_licitacion} onClick={() => toggle(p.id_licitacion)} className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex justify-between ${allowed ? 'bg-green-50 text-green-800 border-green-200 border' : 'hover:bg-gray-50 text-gray-500 border border-transparent'}`}>
+                            <button
+                                key={p.id_licitacion}
+                                onClick={() => toggle(p.id_licitacion)}
+                                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex justify-between items-center border ${allowed ? 'bg-green-50 text-green-800 border-green-300' : 'bg-white hover:bg-gray-50 text-gray-600 border-transparent'}`}
+                            >
                                 {p.nombre_abreviado}
                                 {allowed && <CheckCircle2 className="w-4 h-4 text-green-600" />}
                             </button>
