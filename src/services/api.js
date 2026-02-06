@@ -55,7 +55,7 @@ async function getCurrentMobileRole() {
 
     if (profileError) throw profileError;
 
-            if (profile?.role_mobile) {
+    if (profile?.role_mobile) {
         return await getRoleNameById(profile.role_mobile);
     }
 
@@ -1082,10 +1082,17 @@ export const api = {
             dateList.forEach(d => {
                 out[String(d)] = pickCumForDate(String(d));
             });
-            return out;
+
+            // Full timeline of period end dates
+            const fullTimeline = periods.map((p, i) => ({
+                date: p.fecha_hasta || p.fecha_desde,
+                cumulative: cumByIndex[i]
+            })).filter(pt => pt.date);
+
+            return { byDate: out, fullTimeline };
         } catch (error) {
             console.error('Error in getItemEstimatedTimeline:', error);
-            return {};
+            return { byDate: {}, fullTimeline: [] };
         }
     }
     ,

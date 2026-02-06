@@ -1155,9 +1155,12 @@ function PlanTreeView({
                 return (
                     <div key={group.id} className="bg-white">
                         {/* Group Header */}
-                        <button
+                        <div
+                            role="button"
+                            tabIndex={0}
                             onClick={() => toggleGroup(group.id)}
-                            className={`w-full px-4 py-2.5 flex items-center justify-between group transition-colors ${isExpanded ? 'bg-blue-50/20' : 'hover:bg-gray-50'}`}
+                            onKeyDown={(e) => e.key === 'Enter' && toggleGroup(group.id)}
+                            className={`w-full px-4 py-2.5 flex items-center justify-between group transition-colors cursor-pointer ${isExpanded ? 'bg-blue-50/20' : 'hover:bg-gray-50'}`}
                         >
                             <div className="flex items-center gap-3 overflow-hidden">
                                 {isExpanded ? <ChevronDown className="w-4 h-4 text-blue-600 shrink-0" /> : <ChevronRight className="w-4 h-4 text-gray-300 shrink-0" />}
@@ -1188,7 +1191,7 @@ function PlanTreeView({
                                     {normalizedTerm ? groupDisplayCount(group) : group.itemCount}
                                 </span>
                             </div>
-                        </button>
+                        </div>
 
                         {isExpanded && (
                             <div className="divide-y divide-dotted divide-gray-100 bg-white">
@@ -1200,9 +1203,12 @@ function PlanTreeView({
 
                                     return (
                                         <div key={subgroup.id}>
-                                            <button
+                                            <div
+                                                role="button"
+                                                tabIndex={0}
                                                 onClick={() => toggleSubgroup(subgroup.id)}
-                                                className="w-full pl-8 pr-4 py-2 flex items-center justify-between hover:bg-gray-50 transition-colors"
+                                                onKeyDown={(e) => e.key === 'Enter' && toggleSubgroup(subgroup.id)}
+                                                className="w-full pl-8 pr-4 py-2 flex items-center justify-between hover:bg-gray-50 transition-colors cursor-pointer"
                                             >
                                                 <div className="flex items-center gap-2">
                                                     <div className={`w-1 h-1 rounded-full ${subHasProgress ? 'bg-blue-400' : 'bg-gray-200'}`}></div>
@@ -1226,7 +1232,7 @@ function PlanTreeView({
                                                     </button>
                                                     {subExpanded ? <ChevronDown className="w-3 h-3 text-neutral-400" /> : <ChevronRight className="w-3 h-3 text-neutral-300" />}
                                                 </div>
-                                            </button>
+                                            </div>
 
                                             {subExpanded && (
                                                 <div className="pl-6">
@@ -1277,9 +1283,12 @@ function PlanItemRow({ item, onClick, onChart }) {
     const inProgress = item.avance > 0 && !isCompleted;
 
     return (
-        <button
+        <div
+            role="button"
+            tabIndex={0}
             onClick={onClick}
-            className="w-full text-left pl-8 pr-4 py-1.5 hover:bg-blue-50/10 flex items-center justify-between text-xs group transition-all border-l-[3px] border-transparent hover:border-blue-400"
+            onKeyDown={(e) => e.key === 'Enter' && onClick()}
+            className="w-full text-left pl-8 pr-4 py-1.5 hover:bg-blue-50/10 flex items-center justify-between text-xs group transition-all border-l-[3px] border-transparent hover:border-blue-400 cursor-pointer"
         >
             <div className="flex-1 pr-4 min-w-0 flex items-center gap-3">
                 <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${isCompleted ? 'bg-green-500 shadow-sm shadow-green-200' : inProgress ? 'bg-blue-500 shadow-sm shadow-blue-200' : 'bg-gray-200'}`}></div>
@@ -1305,7 +1314,7 @@ function PlanItemRow({ item, onClick, onChart }) {
                     <span className="text-neutral-300">-</span>
                 )}
             </div>
-        </button>
+        </div>
     );
 }
 

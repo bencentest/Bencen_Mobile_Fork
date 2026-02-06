@@ -37,11 +37,16 @@ export function ProgressModal({ item, existingRange = null, editingEntry = null,
 
     const fmt = (iso) => {
         if (!iso) return '';
-        try {
-            return new Date(iso).toLocaleDateString('es-AR');
-        } catch {
-            return String(iso);
+        if (typeof iso !== 'string') return new Date(iso).toLocaleDateString('es-AR');
+        if (iso.includes('T')) return new Date(iso).toLocaleDateString('es-AR');
+        const parts = iso.split(/[-/]/);
+        if (parts.length === 3) {
+            const y = parts[0];
+            const m = parts[1];
+            const d = parts[2];
+            if (y.length === 4) return `${d}/${m}/${y}`;
         }
+        return iso;
     };
 
     const updateWarning = (start, end) => {
