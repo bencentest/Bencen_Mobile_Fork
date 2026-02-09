@@ -4,7 +4,7 @@ import { AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Responsive
 import { api } from '../services/api';
 import { ProgressModal } from './ProgressModal';
 
-export function HistoryModal({ item, onClose, onUpdate }) {
+export function HistoryModal({ item, onClose, onUpdate, currentRole = null }) {
     const [history, setHistory] = useState([]);
     const [loading, setLoading] = useState(true);
     const [estimatedPlanSeries, setEstimatedPlanSeries] = useState([]); // datos_licitaciones_avances (cumulative by period)
@@ -14,6 +14,8 @@ export function HistoryModal({ item, onClose, onUpdate }) {
     const [isAdding, setIsAdding] = useState(false);
     const [deletingEntry, setDeletingEntry] = useState(null);
     const [viewingImage, setViewingImage] = useState(null);
+
+    const canEditOrDelete = String(currentRole || '').toLowerCase() === 'admin_gerencia';
 
     const existingRange = (() => {
         const entries = (history || []).filter(h => h?.fecha_inicio && h?.fecha_fin);
@@ -578,14 +580,16 @@ export function HistoryModal({ item, onClose, onUpdate }) {
                                                         </div>
                                                     </div>
 
-                                                    <div className="flex items-center gap-1">
-                                                        <button onClick={() => setEditingEntry(entry)} className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded">
-                                                            <Pencil className="w-3.5 h-3.5" />
-                                                        </button>
-                                                        <button onClick={() => handleDeleteClick(entry)} className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded">
-                                                            <Trash2 className="w-3.5 h-3.5" />
-                                                        </button>
-                                                    </div>
+                                                    {canEditOrDelete && (
+                                                        <div className="flex items-center gap-1">
+                                                            <button onClick={() => setEditingEntry(entry)} className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded">
+                                                                <Pencil className="w-3.5 h-3.5" />
+                                                            </button>
+                                                            <button onClick={() => handleDeleteClick(entry)} className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded">
+                                                                <Trash2 className="w-3.5 h-3.5" />
+                                                            </button>
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
 

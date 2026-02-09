@@ -164,6 +164,7 @@ function App() {
         <ItemsList
           project={selectedProject}
           onBack={() => setSelectedProject(null)}
+          currentRole={userRole}
         />
       );
     }

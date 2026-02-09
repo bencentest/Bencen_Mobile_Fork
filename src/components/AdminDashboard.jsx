@@ -51,6 +51,7 @@ export function AdminDashboard({ onLogout, currentRole }) {
             <ProjectDetailDashboard
                 key={selectedProject}
                 projectId={selectedProject}
+                currentRole={currentRole}
                 onBack={handleDetailBack}
             />
         );

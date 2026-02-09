@@ -5,7 +5,7 @@ import { ProgressModal } from './ProgressModal';
 import { HistoryModal } from './HistoryModal';
 import { AvanceChartModal } from './AvanceChartModal';
 
-export function ItemsList({ project, onBack }) {
+export function ItemsList({ project, onBack, currentRole = null }) {
     const [items, setItems] = useState([]);
     const [progressMap, setProgressMap] = useState(new Map());
     const [searchTerm, setSearchTerm] = useState("");
@@ -335,6 +335,7 @@ export function ItemsList({ project, onBack }) {
                     item={viewingHistoryItem}
                     onClose={() => setViewingHistoryItem(null)}
                     onUpdate={refreshProgress}
+                    currentRole={currentRole}
                 />
             )}
 
