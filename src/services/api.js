@@ -253,13 +253,14 @@ export const api = {
 
     deleteProgress: async (id) => {
         try {
-            const { error } = await supabase
+            const { data, error } = await supabase
                 .from('partes_diarios')
                 .delete()
-                .eq('id', id);
+                .eq('id', id)
+                .select('id');
 
             if (error) throw error;
-            return true;
+            return Array.isArray(data) ? data.length : 0;
         } catch (error) {
             console.error('Error deleting progress:', error);
             throw error;
@@ -1158,6 +1159,269 @@ export const api = {
         } catch (error) {
             console.error('Error in getPlannedWindowByEstimado:', error);
             return null;
+        }
+    },
+
+    // Monthly plan (estimado) vs real (partes_diarios) per item.
+    // - Columns are months derived from datos_licitaciones_periodos (grouped by YYYY-MM based on fecha_hasta/fecha_desde).
+    // - Real is aggregated from partes_diarios by month using fecha_fin (or fecha fallback). (Option 1: assign the whole carga to its end month.)
+    // Returns: { months: [{ key, label, start, end }], estByItemId: { [id]: { [monthKey]: pctPoints } }, realByItemId: { [id]: { [monthKey]: pctPoints } } }
+    getMonthlyPlanVsReal: async ({ licitacionId, itemIds }) => {
+        try {
+            if (!licitacionId) return { months: [], estByItemId: {}, realByItemId: {} };
+            if (!Array.isArray(itemIds) || itemIds.length === 0) return { months: [], estByItemId: {}, realByItemId: {} };
+
+            const toIso = (v) => String(v || '').slice(0, 10) || null;
+            const monthKeyOfIso = (iso) => {
+                const s = String(iso || '');
+                return s.length >= 7 ? s.slice(0, 7) : null; // YYYY-MM
+            };
+
+            const { data: periods, error: pErr } = await supabase
+                .from('datos_licitaciones_periodos')
+                .select('id, orden, periodo, fecha_desde, fecha_hasta')
+                .eq('id_licitacion', licitacionId)
+                .order('orden', { ascending: true })
+                .order('id', { ascending: true });
+
+            if (pErr) throw pErr;
+
+            const periodList = periods || [];
+            const monthsMap = new Map(); // key -> { key,label,start,end, periodIds: [] }
+            const periodMonthKey = new Map(); // periodId -> monthKey
+
+            periodList.forEach((p) => {
+                const startIso = toIso(p.fecha_desde || p.fecha_hasta);
+                const endIso = toIso(p.fecha_hasta || p.fecha_desde);
+                const key = monthKeyOfIso(endIso || startIso);
+                if (!key) return;
+
+                periodMonthKey.set(String(p.id), key);
+
+                if (!monthsMap.has(key)) {
+                    const label = (() => {
+                        const [y, m] = key.split('-');
+                        return `${m}/${String(y).slice(2)}`;
+                    })();
+                    monthsMap.set(key, { key, label, start: startIso, end: endIso, periodIds: [p.id] });
+                } else {
+                    const bucket = monthsMap.get(key);
+                    bucket.periodIds.push(p.id);
+                    if (bucket.start && startIso && startIso < bucket.start) bucket.start = startIso;
+                    if (bucket.end && endIso && endIso > bucket.end) bucket.end = endIso;
+                }
+            });
+
+            const months = Array.from(monthsMap.values()).sort((a, b) => a.key.localeCompare(b.key));
+
+            const estByItemId = {};
+            const realByItemId = {};
+            itemIds.forEach((id) => {
+                const k = String(id);
+                estByItemId[k] = {};
+                realByItemId[k] = {};
+            });
+
+            const periodIds = periodList.map(p => p.id).filter(Boolean);
+            if (periodIds.length === 0) return { months, estByItemId, realByItemId };
+
+            // --- Estimado: sum avance_estimado per item per month (as percent points) ---
+            const chunkSize = 500;
+            const chunks = [];
+            for (let i = 0; i < itemIds.length; i += chunkSize) chunks.push(itemIds.slice(i, i + chunkSize));
+
+            for (const chunk of chunks) {
+                const { data: avances, error: aErr } = await supabase
+                    .from('datos_licitaciones_avances')
+                    .select('id_item, id_periodo, avance_estimado')
+                    .eq('id_licitacion', licitacionId)
+                    .in('id_item', chunk)
+                    .in('id_periodo', periodIds);
+
+                if (aErr) throw aErr;
+                (avances || []).forEach((r) => {
+                    const itemId = String(r.id_item);
+                    const monthKey = periodMonthKey.get(String(r.id_periodo)) || null;
+                    if (!monthKey) return;
+                    const deltaPctPoints = (Number(r.avance_estimado) || 0) * 100;
+                    estByItemId[itemId][monthKey] = (Number(estByItemId[itemId][monthKey]) || 0) + deltaPctPoints;
+                });
+            }
+
+            // --- Real: sum partes_diarios.avance per item per month (by fecha_fin or fecha) ---
+            for (const chunk of chunks) {
+                const { data: parts, error: rErr } = await supabase
+                    .from('partes_diarios')
+                    .select('id, item_id, avance, fecha, fecha_fin')
+                    .eq('id_licitacion', licitacionId)
+                    .in('item_id', chunk);
+
+                if (rErr) throw rErr;
+                (parts || []).forEach((p) => {
+                    const iso = toIso(p.fecha_fin || p.fecha);
+                    const key = monthKeyOfIso(iso);
+                    if (!key) return;
+                    const itemId = String(p.item_id);
+                    realByItemId[itemId][key] = (Number(realByItemId[itemId][key]) || 0) + (Number(p.avance) || 0);
+                });
+            }
+
+            return { months, estByItemId, realByItemId };
+        } catch (error) {
+            console.error('Error in getMonthlyPlanVsReal:', error);
+            throw error;
+        }
+    },
+
+    // Timeline of progress "cargas" (partes_diarios) for one or more items.
+    // Returns one point per carga (sorted by fecha_fin/fecha then created_at),
+    // including cumulative "real" both in % (weighted by weightsByItemId) and in quantity when possible.
+    getAvanceCargasTimeline: async ({
+        licitacionId,
+        itemIds,
+        startDate = null,
+        endDate = null,
+        weightsByItemId = null,
+        qtyByItemId = null,
+        unitByItemId = null
+    }) => {
+        try {
+            if (!licitacionId) return [];
+            if (!Array.isArray(itemIds) || itemIds.length === 0) return [];
+
+            const weightFor = (itemId) => {
+                if (!weightsByItemId) return 1;
+                const key = String(itemId);
+                const w = weightsByItemId[key] ?? weightsByItemId[itemId];
+                const n = Number(w);
+                return Number.isFinite(n) && n > 0 ? n : 1;
+            };
+
+            const qtyFor = (itemId) => {
+                if (!qtyByItemId) return null;
+                const key = String(itemId);
+                const q = qtyByItemId[key] ?? qtyByItemId[itemId];
+                const n = Number(q);
+                return Number.isFinite(n) && n >= 0 ? n : null;
+            };
+
+            const unitFor = (itemId) => {
+                if (!unitByItemId) return null;
+                const key = String(itemId);
+                const u = unitByItemId[key] ?? unitByItemId[itemId];
+                return u ? String(u) : null;
+            };
+
+            const totalWeight = itemIds.reduce((sum, id) => sum + weightFor(id), 0) || 1;
+
+            // Quantity view is only valid if all items share the same unit and have quantity totals.
+            let uniformUnit = null;
+            let canQty = true;
+            for (const id of itemIds) {
+                const u = unitFor(id);
+                const q = qtyFor(id);
+                if (!u || q === null) { canQty = false; break; }
+                if (!uniformUnit) uniformUnit = u;
+                else if (uniformUnit !== u) { canQty = false; break; }
+            }
+
+            const chunkSize = 500;
+            const chunks = [];
+            for (let i = 0; i < itemIds.length; i += chunkSize) chunks.push(itemIds.slice(i, i + chunkSize));
+
+            let rows = [];
+            for (const chunk of chunks) {
+                let q = supabase
+                    .from('partes_diarios')
+                    .select('id, item_id, avance, fecha, fecha_inicio, fecha_fin, created_at, observaciones')
+                    .eq('id_licitacion', licitacionId)
+                    .in('item_id', chunk);
+
+                // Try to filter on the effective "fecha de avance" (fecha_fin OR fecha).
+                // Supabase doesn't support coalesce in the query builder, so we OR both columns.
+                if (startDate && endDate) {
+                    q = q.or(`and(fecha_fin.gte.${startDate},fecha_fin.lte.${endDate}),and(fecha.gte.${startDate},fecha.lte.${endDate})`);
+                } else if (startDate) {
+                    q = q.or(`fecha_fin.gte.${startDate},fecha.gte.${startDate}`);
+                } else if (endDate) {
+                    q = q.or(`fecha_fin.lte.${endDate},fecha.lte.${endDate}`);
+                }
+
+                const { data, error } = await q;
+                if (error) throw error;
+                rows = rows.concat(data || []);
+            }
+
+            const effectiveIso = (r) => String(r?.fecha_fin || r?.fecha || '').slice(0, 10) || null;
+            const inRange = (iso) => {
+                if (!iso) return false;
+                if (startDate && iso < startDate) return false;
+                if (endDate && iso > endDate) return false;
+                return true;
+            };
+
+            const normalized = (rows || [])
+                .map(r => {
+                    const iso = effectiveIso(r);
+                    return {
+                        ...r,
+                        _avance_iso: iso
+                    };
+                })
+                .filter(r => inRange(r._avance_iso));
+
+            // Sort by "fecha de avance" then by created_at so cumulative is consistent.
+            normalized.sort((a, b) => {
+                const da = a._avance_iso || '';
+                const db = b._avance_iso || '';
+                if (da !== db) return da < db ? -1 : 1;
+                const ca = a.created_at || '';
+                const cb = b.created_at || '';
+                if (ca !== cb) return ca < cb ? -1 : 1;
+                return Number(a.id) - Number(b.id);
+            });
+
+            let cumPct = 0;
+            let cumQty = 0;
+
+            return normalized.map((r) => {
+                const itemId = r.item_id;
+                const avance = Number(r.avance) || 0;
+                const iso = r._avance_iso;
+
+                const w = weightFor(itemId);
+                const deltaPct = (avance * w / totalWeight);
+                cumPct += deltaPct;
+
+                let deltaQty = null;
+                if (canQty) {
+                    const qTotal = qtyFor(itemId);
+                    if (qTotal !== null) {
+                        deltaQty = (avance / 100) * qTotal;
+                        cumQty += deltaQty;
+                    }
+                }
+
+                return {
+                    id: r.id,
+                    item_id: r.item_id,
+                    observaciones: r.observaciones ?? null,
+                    created_at: r.created_at ?? null,
+                    fecha_inicio: r.fecha_inicio ?? null,
+                    fecha_fin: r.fecha_fin ?? null,
+                    fecha: r.fecha ?? null,
+                    avance,
+                    avance_iso: iso,
+                    real_delta_pct: deltaPct,
+                    real_cum_pct: cumPct,
+                    real_delta_qty: canQty ? deltaQty : null,
+                    real_cum_qty: canQty ? cumQty : null,
+                    unidad: canQty ? uniformUnit : null
+                };
+            });
+        } catch (error) {
+            console.error('Error in getAvanceCargasTimeline:', error);
+            throw error;
         }
     }
 };
