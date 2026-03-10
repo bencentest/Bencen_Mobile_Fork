@@ -6,6 +6,11 @@ import imageCompression from 'browser-image-compression';
 export function ProgressModal({ item, existingRange = null, editingEntry = null, onClose, onSuccess }) {
     const totalCantidad = Number(item?.cantidad) || 0;
     const unidad = item?.unidad || '';
+    const formatLinkedInput = (value) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return '';
+        return String(Math.round((n + Number.EPSILON) * 100) / 100);
+    };
 
     const pctFromQty = (qty) => {
         const q = Number(qty);
@@ -24,7 +29,7 @@ export function ProgressModal({ item, existingRange = null, editingEntry = null,
     const [avanceQty, setAvanceQty] = useState(() => {
         if (!editingEntry || totalCantidad <= 0) return '';
         const qty = qtyFromPct(editingEntry.avance);
-        return Number.isFinite(qty) ? String(qty) : '';
+        return Number.isFinite(qty) ? formatLinkedInput(qty) : '';
     });
     const [observaciones, setObservaciones] = useState(editingEntry ? editingEntry.observaciones : '');
     const [fechaInicio, setFechaInicio] = useState(editingEntry?.fecha_inicio || '');
@@ -109,11 +114,14 @@ export function ProgressModal({ item, existingRange = null, editingEntry = null,
         e.preventDefault();
         setError(null);
 
-        // Prefer % if provided, otherwise derive from quantity.
-        let pct = avancePct;
-        if ((pct === '' || pct === null || pct === undefined) && avanceQty !== '' && avanceQty !== null && avanceQty !== undefined) {
-            const derived = pctFromQty(avanceQty);
-            pct = derived === '' ? '' : String(derived);
+        const hasQtyInput = avanceQty !== '' && avanceQty !== null && avanceQty !== undefined;
+        const hasPctInput = avancePct !== '' && avancePct !== null && avancePct !== undefined;
+
+        // If quantity is present, persist the exact % derived from it.
+        // The displayed % may be rounded for the input UI, but storage should preserve the exact ratio.
+        let pct = hasQtyInput ? pctFromQty(avanceQty) : avancePct;
+        if ((!hasQtyInput) && !hasPctInput) {
+            pct = '';
         }
 
         const val = parseFloat(pct);
@@ -122,7 +130,7 @@ export function ProgressModal({ item, existingRange = null, editingEntry = null,
             return;
         }
 
-        if (totalCantidad > 0 && avanceQty !== '' && avanceQty !== null && avanceQty !== undefined) {
+        if (totalCantidad > 0 && hasQtyInput) {
             const q = parseFloat(avanceQty);
             if (isNaN(q) || q < 0) {
                 setError("La cantidad debe ser un número válido.");
@@ -222,7 +230,7 @@ export function ProgressModal({ item, existingRange = null, editingEntry = null,
                                         const next = e.target.value;
                                         setAvanceQty(next);
                                         const nextPct = pctFromQty(next);
-                                        if (nextPct !== '') setAvancePct(String(nextPct));
+                                        if (nextPct !== '') setAvancePct(formatLinkedInput(nextPct));
                                     }}
                                     className="w-full h-11 pl-4 pr-16 rounded-xl border-gray-300 focus:border-[var(--accent)] focus:ring-[var(--accent)] text-base font-semibold"
                                     placeholder="Cantidad"
@@ -245,7 +253,7 @@ export function ProgressModal({ item, existingRange = null, editingEntry = null,
                                     setAvancePct(next);
                                     if (totalCantidad > 0) {
                                         const nextQty = qtyFromPct(next);
-                                        if (nextQty !== '') setAvanceQty(String(nextQty));
+                                        if (nextQty !== '') setAvanceQty(formatLinkedInput(nextQty));
                                     }
                                 }}
                                 className="w-full h-12 pl-4 pr-12 rounded-xl border-gray-300 focus:border-[var(--accent)] focus:ring-[var(--accent)] text-lg font-semibold"
