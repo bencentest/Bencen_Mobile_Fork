@@ -7,16 +7,25 @@ export function NotificationFeed({ refreshTrigger }) {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        fetchActivity();
-        const interval = setInterval(fetchActivity, 60000); // Poll every minute
-        return () => clearInterval(interval);
-    }, [refreshTrigger]);
+        let cancelled = false;
 
-    const fetchActivity = async () => {
-        const data = await api.getRecentActivity(15);
-        setActivities(data);
-        setLoading(false);
-    };
+        const fetchActivity = async () => {
+            const data = await api.getRecentActivity(15);
+            if (cancelled) return;
+            setActivities(data);
+            setLoading(false);
+        };
+
+        void fetchActivity();
+        const interval = setInterval(() => {
+            void fetchActivity();
+        }, 60000);
+
+        return () => {
+            cancelled = true;
+            clearInterval(interval);
+        };
+    }, [refreshTrigger]);
 
     if (loading) return <div className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-orange-500" /></div>;
 
@@ -40,7 +49,7 @@ export function NotificationFeed({ refreshTrigger }) {
                                 <div className="flex items-start gap-3">
                                     <div className="mt-1">
                                         <div className="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600 font-bold text-xs uppercase">
-                                            {act.mobile_users?.name?.substring(0, 2) || 'VN'}
+                                            {act.reporter?.name?.substring(0, 2) || 'VN'}
                                         </div>
                                     </div>
                                     <div className="flex-1 min-w-0">
@@ -54,7 +63,7 @@ export function NotificationFeed({ refreshTrigger }) {
                                         </div>
 
                                         <p className="text-xs font-bold text-neutral-900 truncate">
-                                            {act.mobile_users?.name || act.mobile_users?.email}
+                                            {act.reporter?.name || act.reporter?.email}
                                         </p>
 
                                         <p className="text-sm text-neutral-600 mt-0.5 leading-snug">

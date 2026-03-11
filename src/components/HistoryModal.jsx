@@ -614,7 +614,7 @@ export function HistoryModal({ item, onClose, onUpdate, currentRole = null }) {
 
                                         <div className="flex items-center gap-1.5 text-xs text-neutral-400 border-t border-gray-100 pt-2">
                                             <User className="w-3.5 h-3.5" />
-                                            {entry.mobile_users?.name || entry.mobile_users?.email || 'Usuario Desconocido'}
+                                            {entry.reporter?.name || entry.reporter?.email || 'Usuario Desconocido'}
                                         </div>
                                     </div>
                                 </div>

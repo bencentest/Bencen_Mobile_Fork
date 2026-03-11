@@ -1,7 +1,7 @@
 import { supabase } from './supabase';
 
-// During the migration, some environments still use the legacy `mobile_users` table.
-// Prefer the new model: `reports_users.role_mobile -> usuarios_roles.id`.
+// Mobile roles/users live in `reports_users`.
+// `reports_users.role_mobile -> usuarios_roles.id`.
 const roleNameByIdCache = new Map();
 const roleIdByNameCache = new Map();
 
@@ -46,7 +46,6 @@ async function getCurrentMobileRole() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
 
-    // New schema
     const { data: profile, error: profileError } = await supabase
         .from('reports_users')
         .select('role_mobile')
@@ -58,16 +57,7 @@ async function getCurrentMobileRole() {
     if (profile?.role_mobile) {
         return await getRoleNameById(profile.role_mobile);
     }
-
-    // Legacy fallback
-    const { data: legacy, error: legacyError } = await supabase
-        .from('mobile_users')
-        .select('role')
-        .eq('id', user.id)
-        .maybeSingle();
-
-    if (legacyError) throw legacyError;
-    return legacy?.role ? String(legacy.role).toLowerCase() : null;
+    return null;
 }
 
 export const api = {
@@ -103,7 +93,7 @@ export const api = {
                     photos,
                     fecha_inicio,
                     fecha_fin,
-                    mobile_users (
+                    reporter:reports_users (
                         name,
                         email
                     )
@@ -343,7 +333,7 @@ export const api = {
                 .from('partes_diarios')
                 .select(`
                     id, avance, fecha, observaciones, created_at, item_id, id_licitacion,
-                    mobile_users (name, email)
+                    reporter:reports_users (name, email)
                 `)
                 .order('created_at', { ascending: false })
                 .limit(limit);
@@ -416,8 +406,7 @@ export const api = {
                 if (engineerRoleId) {
                     return supabase.from('reports_users').select('id', { count: 'exact', head: true }).eq('role_mobile', engineerRoleId);
                 }
-                // Fallback legacy
-                return supabase.from('mobile_users').select('id', { count: 'exact', head: true }).eq('role', 'engineer');
+                return supabase.from('reports_users').select('id', { count: 'exact', head: true }).eq('role_mobile', -1);
             })();
             let reportsQuery = supabase.from('partes_diarios').select('id', { count: 'exact', head: true }).gte('created_at', todayISO);
 
@@ -629,7 +618,7 @@ export const api = {
             // 2. Fetch Progress
             const { data: reports, error: reportsError } = await supabase
                 .from('partes_diarios')
-                .select('item_id, avance, fecha, created_at, id, observaciones, mobile_users(name)')
+                .select('item_id, avance, fecha, created_at, id, observaciones, reporter:reports_users(name)')
                 .eq('id_licitacion', licitacionId)
                 .order('created_at', { ascending: false });
 

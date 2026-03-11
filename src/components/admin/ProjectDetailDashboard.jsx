@@ -959,7 +959,7 @@ export function ProjectDetailDashboard({ projectId, onBack, currentRole = null }
                                                 <span className="text-[10px] text-neutral-400 shrink-0 ml-2 bg-gray-100 px-2 py-0.5 rounded-full">{new Date(report.created_at).toLocaleDateString()}</span>
                                             </div>
                                             <p className="text-xs text-neutral-600 mb-1 line-clamp-1">{report.description}</p>
-                                            <p className="text-[10px] text-neutral-400 mb-1 italic">Reportado por {report.mobile_users?.name || 'Usuario'}</p>
+                                            <p className="text-[10px] text-neutral-400 mb-1 italic">Reportado por {report.reporter?.name || 'Usuario'}</p>
 
                                             {report.observaciones && (
                                                 <p className="text-xs text-neutral-600 bg-gray-100 p-2 rounded-lg italic mt-2 border border-gray-200">

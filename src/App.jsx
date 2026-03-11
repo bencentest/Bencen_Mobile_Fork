@@ -19,7 +19,7 @@ function App() {
     try {
       const saved = localStorage.getItem('bencen_engineer_project');
       return saved ? JSON.parse(saved) : null;
-    } catch (e) {
+    } catch {
       return null;
     }
   });
@@ -90,21 +90,7 @@ function App() {
         return;
       }
 
-      // Fallback (legacy): mobile_users.role
-      const { data: legacy, error: legacyError } = await supabase
-        .from('mobile_users')
-        .select('role, name')
-        .eq('id', userId)
-        .maybeSingle();
-
-      if (legacyError) throw legacyError;
-
-      if (legacy) {
-        setUserRole(legacy.role);
-        setUserName(legacy.name);
-      } else {
-        setUserRole('pending'); // User Auth exists but not in any profile table
-      }
+      setUserRole('pending'); // User Auth exists but not in reports_users yet
     } catch (err) {
       console.error(err);
     } finally {
