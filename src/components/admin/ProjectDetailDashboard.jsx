@@ -611,6 +611,7 @@ export function ProjectDetailDashboard({ projectId, onBack, currentRole = null }
     });
 
     const [viewingItem, setViewingItem] = useState(null);
+    const [historyDirty, setHistoryDirty] = useState(false);
     const [chartContext, setChartContext] = useState(null); // { title, subtitle, itemIds }
 
     const loadData = () => {
@@ -1009,8 +1010,14 @@ export function ProjectDetailDashboard({ projectId, onBack, currentRole = null }
                 <HistoryModal
                     item={viewingItem}
                     currentRole={currentRole}
-                    onClose={() => { setViewingItem(null); loadData(); }} // Reload to refresh data if changed
-                    onUpdate={() => { /* HistoryModal handles internal updates, but we refresh parent on close */ }}
+                    onClose={() => {
+                        setViewingItem(null);
+                        if (historyDirty) {
+                            loadData();
+                            setHistoryDirty(false);
+                        }
+                    }}
+                    onUpdate={() => setHistoryDirty(true)}
                 />
             )}
 

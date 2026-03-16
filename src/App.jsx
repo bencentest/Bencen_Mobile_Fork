@@ -7,31 +7,74 @@ import { AdminDashboard } from './components/AdminDashboard';
 import { Loader2, LogOut } from 'lucide-react';
 import logo from './assets/logo.png';
 
+const APP_STORAGE_PREFIX = 'bencen_';
+
+function getScopedStorageKey(userId, suffix) {
+  if (!userId) return `${APP_STORAGE_PREFIX}${suffix}`;
+  return `${APP_STORAGE_PREFIX}${userId}_${suffix}`;
+}
+
+function clearAppStorage() {
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(APP_STORAGE_PREFIX)) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    void 0;
+  }
+}
+
+function getLocalIsoDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 
 function App() {
   const [session, setSession] = useState(null);
   const [userRole, setUserRole] = useState(null); // 'admin', 'engineer', or null
   const [userName, setUserName] = useState(null); // NEW: Store User Name
   const [loading, setLoading] = useState(true);
+  const [selectedProject, setSelectedProject] = useState(null);
 
-  // Persistence for Engineer
-  const [selectedProject, setSelectedProject] = useState(() => {
-    try {
-      const saved = localStorage.getItem('bencen_engineer_project');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
-
-  // Save selection
   useEffect(() => {
-    if (selectedProject) {
-      localStorage.setItem('bencen_engineer_project', JSON.stringify(selectedProject));
-    } else {
-      localStorage.removeItem('bencen_engineer_project');
+    const userId = session?.user?.id;
+    if (!userId) {
+      setSelectedProject(null);
+      return;
     }
-  }, [selectedProject]);
+
+    try {
+      const saved = localStorage.getItem(getScopedStorageKey(userId, 'engineer_project'));
+      setSelectedProject(saved ? JSON.parse(saved) : null);
+    } catch {
+      setSelectedProject(null);
+    }
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    const userId = session?.user?.id;
+    if (!userId) return;
+
+    const key = getScopedStorageKey(userId, 'engineer_project');
+    try {
+      if (selectedProject) {
+        localStorage.setItem(key, JSON.stringify(selectedProject));
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch {
+      void 0;
+    }
+  }, [session?.user?.id, selectedProject]);
 
   useEffect(() => {
     // 1. Check active session
@@ -48,14 +91,43 @@ function App() {
         setUserRole(null);
         setUserName(null);
         setSelectedProject(null);
-        localStorage.removeItem('bencen_engineer_project'); // Clear on logout/session end
-
+        clearAppStorage();
         setLoading(false);
       }
     });
 
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    const userId = session?.user?.id;
+    if (!userId) return undefined;
+
+    const dayKey = getScopedStorageKey(userId, 'active_day');
+    const today = getLocalIsoDate();
+
+    try {
+      const storedDay = localStorage.getItem(dayKey);
+      if (storedDay && storedDay !== today) {
+        void handleLogout();
+        return undefined;
+      }
+      localStorage.setItem(dayKey, today);
+    } catch {
+      void 0;
+    }
+
+    const now = new Date();
+    const nextMidnight = new Date(now);
+    nextMidnight.setHours(24, 0, 0, 0);
+    const timeoutMs = Math.max(1000, nextMidnight.getTime() - now.getTime());
+
+    const timeoutId = window.setTimeout(() => {
+      void handleLogout();
+    }, timeoutMs);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [session?.user?.id]);
 
   const checkUserRole = async (userId) => {
     try {
@@ -99,11 +171,7 @@ function App() {
   };
 
   const handleLogout = async () => {
-    // Clear all persistence
-    localStorage.removeItem('bencen_engineer_project');
-    localStorage.removeItem('bencen_admin_project');
-    localStorage.removeItem('bencen_admin_showDetailed');
-
+    clearAppStorage();
     await supabase.auth.signOut();
   };
 
@@ -140,7 +208,7 @@ function App() {
 
   // 3. Admin -> Dashboard
   if (userRole === 'admin' || userRole === 'admin_gerencia') {
-    return <AdminDashboard onLogout={handleLogout} currentRole={userRole} />;
+    return <AdminDashboard onLogout={handleLogout} currentRole={userRole} currentUserId={session.user.id} />;
   }
 
   // 4. Engineer -> Project Selection / Items

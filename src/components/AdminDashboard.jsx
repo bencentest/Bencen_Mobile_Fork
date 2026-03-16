@@ -6,26 +6,56 @@ import { AdminMetrics } from './admin/AdminMetrics';
 import { NotificationFeed } from './admin/NotificationFeed';
 import { ProjectDetailDashboard } from './admin/ProjectDetailDashboard';
 
-export function AdminDashboard({ onLogout, currentRole }) {
+function getAdminStorageKey(userId, suffix) {
+    return `bencen_${userId}_${suffix}`;
+}
+
+export function AdminDashboard({ onLogout, currentRole, currentUserId }) {
     const [showUserList, setShowUserList] = useState(false);
     const [showCreateUser, setShowCreateUser] = useState(false);
     const [showNotifications, setShowNotifications] = useState(false);
     const [refreshTrigger, setRefreshTrigger] = useState(0); // For forcing updates
     // Project Filtering
     const [projects, setProjects] = useState([]);
+    const projectStorageKey = currentUserId ? getAdminStorageKey(currentUserId, 'admin_project') : null;
+    const detailedStorageKey = currentUserId ? getAdminStorageKey(currentUserId, 'admin_showDetailed') : null;
 
     // Persistence: Initialize from localStorage
-    const [selectedProject, setSelectedProject] = useState(() => localStorage.getItem('bencen_admin_project') || '');
-    const [showDetailed, setShowDetailed] = useState(() => localStorage.getItem('bencen_admin_showDetailed') === 'true');
+    const [selectedProject, setSelectedProject] = useState(() => {
+        if (!projectStorageKey) return '';
+        try {
+            return localStorage.getItem(projectStorageKey) || '';
+        } catch {
+            return '';
+        }
+    });
+    const [showDetailed, setShowDetailed] = useState(() => {
+        if (!detailedStorageKey) return false;
+        try {
+            return localStorage.getItem(detailedStorageKey) === 'true';
+        } catch {
+            return false;
+        }
+    });
 
     // Persistence: Save to localStorage
     useEffect(() => {
-        localStorage.setItem('bencen_admin_project', selectedProject);
-    }, [selectedProject]);
+        if (!projectStorageKey) return;
+        try {
+            localStorage.setItem(projectStorageKey, selectedProject);
+        } catch {
+            void 0;
+        }
+    }, [projectStorageKey, selectedProject]);
 
     useEffect(() => {
-        localStorage.setItem('bencen_admin_showDetailed', String(showDetailed));
-    }, [showDetailed]);
+        if (!detailedStorageKey) return;
+        try {
+            localStorage.setItem(detailedStorageKey, String(showDetailed));
+        } catch {
+            void 0;
+        }
+    }, [detailedStorageKey, showDetailed]);
 
     useEffect(() => {
         // Load projects for filter
@@ -33,7 +63,7 @@ export function AdminDashboard({ onLogout, currentRole }) {
             setProjects(data);
             if (data && data.length > 0) {
                 // Validate if stored selection exists in list
-                const storedId = localStorage.getItem('bencen_admin_project');
+                const storedId = projectStorageKey ? localStorage.getItem(projectStorageKey) : '';
                 const isValid = data.some(p => p.id_licitacion === storedId);
 
                 if (!isValid) {
@@ -41,9 +71,52 @@ export function AdminDashboard({ onLogout, currentRole }) {
                 }
             }
         });
-    }, []);
+    }, [projectStorageKey]);
 
     const handleDetailBack = () => setShowDetailed(false);
+    const projectSelector = (
+        <div className="flex items-center gap-3 bg-neutral-800 rounded-lg px-3 py-2 border border-neutral-700">
+            <Search className="w-4 h-4 text-neutral-400 shrink-0" />
+            <select
+                value={selectedProject}
+                onChange={(e) => setSelectedProject(e.target.value)}
+                className="bg-transparent text-sm text-white font-medium focus:outline-none min-w-0 w-full md:min-w-[200px]"
+            >
+                {projects.map(p => (
+                    <option key={p.id_licitacion} value={p.id_licitacion} className="text-black">
+                        {p.nombre_abreviado}
+                    </option>
+                ))}
+            </select>
+        </div>
+    );
+
+    const headerActions = (
+        <div className="flex items-center gap-4">
+            <div className="relative">
+                <button
+                    onClick={() => setShowNotifications(!showNotifications)}
+                    className={`p-2 rounded-full transition-colors ${showNotifications ? 'bg-neutral-700 text-white' : 'hover:bg-neutral-800 text-neutral-400'}`}
+                >
+                    <Bell className="w-5 h-5" />
+                    <span className="absolute top-2 right-2 w-2 h-2 bg-orange-500 rounded-full border border-neutral-900"></span>
+                </button>
+
+                {showNotifications && (
+                    <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-200">
+                        <div className="h-[500px]">
+                            <NotificationFeed refreshTrigger={refreshTrigger} />
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            <span className="text-sm text-neutral-400 hidden sm:inline">Administrador</span>
+            <button onClick={onLogout} className="p-2 bg-neutral-800 rounded-full hover:bg-neutral-700 transition-colors">
+                <LogOut className="w-4 h-4" />
+            </button>
+        </div>
+    );
 
     // Render Detailed Dashboard View
     if (showDetailed && selectedProject) {
@@ -60,56 +133,31 @@ export function AdminDashboard({ onLogout, currentRole }) {
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-neutral-900">
             {/* Navbar */}
-            <div className="bg-neutral-900 text-white px-6 py-4 flex justify-between items-center sticky top-0 z-20 shadow-md">
-                <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-orange-600 flex items-center justify-center">
-                        <Shield className="w-5 h-5 text-white" />
-                    </div>
-                    <span className="font-bold text-lg tracking-tight">Admin Dashboard</span>
-                </div>
-
-                {/* Global Filter */}
-                <div className="hidden md:flex items-center gap-3 bg-neutral-800 rounded-lg px-3 py-1.5 border border-neutral-700">
-                    <Search className="w-4 h-4 text-neutral-400" />
-                    <select
-                        value={selectedProject}
-                        onChange={(e) => setSelectedProject(e.target.value)}
-                        className="bg-transparent text-sm text-white font-medium focus:outline-none min-w-[200px]"
-                    >
-                        {projects.map(p => (
-                            <option key={p.id_licitacion} value={p.id_licitacion} className="text-black">
-                                {p.nombre_abreviado}
-                            </option>
-                        ))}
-                    </select>
-                </div>
-
-                <div className="flex items-center gap-4">
-                    {/* Notification Bell */}
-                    <div className="relative">
-                        <button
-                            onClick={() => setShowNotifications(!showNotifications)}
-                            className={`p-2 rounded-full transition-colors ${showNotifications ? 'bg-neutral-700 text-white' : 'hover:bg-neutral-800 text-neutral-400'}`}
-                        >
-                            <Bell className="w-5 h-5" />
-                            {/* Red Dot if needed */}
-                            <span className="absolute top-2 right-2 w-2 h-2 bg-orange-500 rounded-full border border-neutral-900"></span>
-                        </button>
-
-                        {/* Notification Dropdown */}
-                        {showNotifications && (
-                            <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-200">
-                                <div className="h-[500px]">
-                                    <NotificationFeed refreshTrigger={refreshTrigger} />
-                                </div>
+            <div className="bg-neutral-900 text-white px-4 md:px-6 py-4 sticky top-0 z-20 shadow-md">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-orange-600 flex items-center justify-center shrink-0">
+                                <Shield className="w-5 h-5 text-white" />
                             </div>
-                        )}
+                            <span className="font-bold text-lg tracking-tight truncate">Admin Dashboard</span>
+                        </div>
+                        <div className="md:hidden shrink-0">
+                            {headerActions}
+                        </div>
                     </div>
 
-                    <span className="text-sm text-neutral-400 hidden sm:inline">Administrador</span>
-                    <button onClick={onLogout} className="p-2 bg-neutral-800 rounded-full hover:bg-neutral-700 transition-colors">
-                        <LogOut className="w-4 h-4" />
-                    </button>
+                    <div className="md:hidden">
+                        {projectSelector}
+                    </div>
+
+                    <div className="hidden md:block">
+                        {projectSelector}
+                    </div>
+
+                    <div className="hidden md:block">
+                        {headerActions}
+                    </div>
                 </div>
             </div>
 
@@ -175,14 +223,16 @@ export function AdminDashboard({ onLogout, currentRole }) {
     );
 }
 
-function ActionCard({ icon: Icon, title, desc, onClick, color }) {
+function ActionCard({ icon, title, desc, onClick, color }) {
+    const IconComponent = icon;
+
     return (
         <button
             onClick={onClick}
             className="p-3 bg-white rounded-xl shadow-sm border border-gray-200 hover:border-orange-200 hover:shadow-md transition-all text-left flex items-center gap-3 group"
         >
             <div className={`w-10 h-10 rounded-lg ${color} text-white flex items-center justify-center shadow-md group-hover:scale-110 transition-transform`}>
-                <Icon className="w-5 h-5" />
+                <IconComponent className="w-5 h-5" />
             </div>
             <div>
                 <h3 className="font-bold text-neutral-800 text-base leading-tight">{title}</h3>
@@ -720,7 +770,7 @@ function UserListModal({ onClose, currentRole }) {
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl h-[600px] flex flex-col overflow-hidden">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl h-[min(78vh,680px)] sm:h-[600px] flex flex-col overflow-hidden">
                 <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
                     <h3 className="font-bold text-lg text-neutral-900 flex items-center gap-2">
                         <Users className="w-5 h-5 text-blue-600" /> Gestión de Usuarios
@@ -732,12 +782,12 @@ function UserListModal({ onClose, currentRole }) {
                     {loading ? <Loader2 className="animate-spin mx-auto mt-10" /> : (
                         <div className="grid gap-3">
                             {users.map(u => (
-                                <div key={u.id} className="p-4 rounded-xl border border-gray-200 hover:border-blue-300 hover:bg-blue-50/50 transition-all flex items-center justify-between">
-                                    <div>
-                                        <p className="font-bold text-neutral-900">{u.name}</p>
-                                        <p className="text-sm text-neutral-500">{u.email}</p>
+                                <div key={u.id} className="p-4 rounded-xl border border-gray-200 hover:border-blue-300 hover:bg-blue-50/50 transition-all flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <div className="min-w-0">
+                                        <p className="font-bold text-neutral-900 break-words">{u.name}</p>
+                                        <p className="text-sm text-neutral-500 break-all">{u.email}</p>
                                     </div>
-                                    <div className="flex items-center gap-2 shrink-0 ml-4">
+                                    <div className="grid grid-cols-1 gap-2 w-full sm:w-auto sm:flex sm:items-center sm:gap-2 shrink-0 sm:ml-4">
                                         {(() => {
                                             const roleName = String(availableRoles.find(r => String(r.id) === String(u.role_mobile))?.rol || '').toLowerCase();
                                             const canEditPerms = roleName !== 'admin' && roleName !== 'admin_gerencia';
@@ -750,7 +800,7 @@ function UserListModal({ onClose, currentRole }) {
                                                             type="button"
                                                             onClick={() => toggleManageVisibility(u)}
                                                             disabled={visibilitySavingId === String(u.id)}
-                                                            className={`h-9 w-9 rounded-lg border transition-colors flex items-center justify-center disabled:opacity-60 ${u.mobile_manage_visible === false
+                                                            className={`h-9 w-full sm:w-9 rounded-lg border transition-colors flex items-center justify-center disabled:opacity-60 ${u.mobile_manage_visible === false
                                                                 ? 'border-gray-200 text-gray-400 bg-gray-50 hover:bg-gray-100'
                                                                 : 'border-neutral-200 text-neutral-700 bg-white hover:bg-neutral-50'
                                                                 }`}
@@ -767,7 +817,7 @@ function UserListModal({ onClose, currentRole }) {
                                                         type="button"
                                                         onClick={() => canEditPerms && setSelectedUser(u)}
                                                         disabled={!canEditPerms}
-                                                        className={`h-9 w-[120px] rounded-lg text-xs font-bold border shadow-sm transition-colors ${canEditPerms
+                                                        className={`h-9 w-full sm:w-[120px] rounded-lg text-xs font-bold border shadow-sm transition-colors ${canEditPerms
                                                             ? 'border-green-300 text-green-700 bg-green-50 hover:bg-green-100'
                                                             : 'border-gray-200 text-gray-300 bg-gray-50 cursor-not-allowed'
                                                             }`}
@@ -779,7 +829,7 @@ function UserListModal({ onClose, currentRole }) {
                                                     <select
                                                         value={u.role_mobile ? String(u.role_mobile) : ''}
                                                         onChange={(e) => changeRole(u.id, e.target.value)}
-                                                        className="h-9 w-[120px] text-xs font-bold uppercase px-3 rounded-lg border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 outline-none cursor-pointer appearance-none text-center"
+                                                        className="h-9 w-full sm:w-[120px] text-xs font-bold uppercase px-3 rounded-lg border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 outline-none cursor-pointer appearance-none text-center"
                                                         aria-label="Rol Mobile"
                                                     >
                                                         <option value="" disabled>SIN ROL</option>
@@ -793,7 +843,7 @@ function UserListModal({ onClose, currentRole }) {
                                                             type="button"
                                                             onClick={() => removeMobileAssignments(u)}
                                                             disabled={removingUserId === String(u.id)}
-                                                            className="h-9 w-9 rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 transition-colors flex items-center justify-center disabled:opacity-60"
+                                                            className="h-9 w-full sm:w-9 rounded-lg border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 transition-colors flex items-center justify-center disabled:opacity-60"
                                                             title="Quitar rol y permisos (volver a pendientes)"
                                                             aria-label="Quitar asignaciones"
                                                         >

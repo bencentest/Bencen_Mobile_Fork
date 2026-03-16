@@ -1,10 +1,46 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../../services/api';
-import { Clock, CheckCircle2, User, Loader2, ArrowRight } from 'lucide-react';
+import { Clock, Loader2, ArrowRight } from 'lucide-react';
 
 export function NotificationFeed({ refreshTrigger }) {
     const [activities, setActivities] = useState([]);
     const [loading, setLoading] = useState(true);
+
+    const formatActivityDateTime = (value) => {
+        if (!value) return '-';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '-';
+
+        const now = new Date();
+        const isToday =
+            date.getFullYear() === now.getFullYear() &&
+            date.getMonth() === now.getMonth() &&
+            date.getDate() === now.getDate();
+
+        const timeText = date.toLocaleTimeString('es-AR', {
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+
+        if (isToday) return timeText;
+
+        const dateText = date.toLocaleDateString('es-AR', {
+            day: '2-digit',
+            month: '2-digit',
+            year: '2-digit'
+        });
+
+        return `${dateText} ${timeText}`;
+    };
+
+    const formatPercent = (value) => {
+        const num = Number(value);
+        if (!Number.isFinite(num)) return '0%';
+        return `${num.toLocaleString('es-AR', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2
+        })}%`;
+    };
 
     useEffect(() => {
         let cancelled = false;
@@ -27,7 +63,9 @@ export function NotificationFeed({ refreshTrigger }) {
         };
     }, [refreshTrigger]);
 
-    if (loading) return <div className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-orange-500" /></div>;
+    if (loading) {
+        return <div className="p-8 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-orange-500" /></div>;
+    }
 
     return (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 h-full flex flex-col">
@@ -58,7 +96,7 @@ export function NotificationFeed({ refreshTrigger }) {
                                                 {act.project_name || 'Obra Desconocida'}
                                             </span>
                                             <span className="text-[10px] text-gray-400 whitespace-nowrap ml-2">
-                                                {new Date(act.created_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
+                                                {formatActivityDateTime(act.created_at)}
                                             </span>
                                         </div>
 
@@ -67,7 +105,7 @@ export function NotificationFeed({ refreshTrigger }) {
                                         </p>
 
                                         <p className="text-sm text-neutral-600 mt-0.5 leading-snug">
-                                            Reportó <span className="font-bold text-green-600">{act.avance}%</span> en <span className="text-neutral-800 font-medium">"{act.item_detail.descripcion}"</span>
+                                            Reporto <span className="font-bold text-green-600">{formatPercent(act.avance)}</span> en <span className="text-neutral-800 font-medium">"{act.item_detail.descripcion}"</span>
                                         </p>
 
                                         {act.observaciones && (
