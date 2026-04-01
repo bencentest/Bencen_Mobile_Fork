@@ -60,6 +60,29 @@ async function getCurrentMobileRole() {
     return null;
 }
 
+async function attachReporterProfiles(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (list.length === 0) return list;
+
+    const userIds = [...new Set(list.map((row) => row?.user_id).filter(Boolean))];
+    if (userIds.length === 0) {
+        return list.map((row) => ({ ...row, reporter: null }));
+    }
+
+    const { data, error } = await supabase
+        .from('Usuarios_Auth')
+        .select('id, name, email')
+        .in('id', userIds);
+
+    if (error) throw error;
+
+    const reporterById = new Map((data || []).map((user) => [String(user.id), user]));
+    return list.map((row) => ({
+        ...row,
+        reporter: reporterById.get(String(row.user_id)) || null
+    }));
+}
+
 export const api = {
     getItems: async (licitacionId) => {
         try {
@@ -81,7 +104,6 @@ export const api = {
 
     getItemHistory: async (itemId) => {
         try {
-            // Fetch history with user details
             const { data, error } = await supabaseMobile
                 .from('partes_diarios')
                 .select(`
@@ -93,17 +115,14 @@ export const api = {
                     photos,
                     fecha_inicio,
                     fecha_fin,
-                    reporter:Usuarios_Auth (
-                        name,
-                        email
-                    )
+                    user_id
                 `)
                 .eq('item_id', itemId)
                 .order('fecha', { ascending: false })
                 .order('created_at', { ascending: false });
 
             if (error) throw error;
-            return data || [];
+            return await attachReporterProfiles(data || []);
         } catch (error) {
             console.error('Error fetching history:', error);
             throw error;
@@ -328,17 +347,16 @@ export const api = {
 
     getRecentActivity: async (limit = 20) => {
         try {
-            // 1. Fetch recent parts with user info
-            const { data: parts, error } = await supabaseMobile
+            const { data: rawParts, error } = await supabaseMobile
                 .from('partes_diarios')
                 .select(`
-                    id, avance, fecha, observaciones, created_at, item_id, id_licitacion,
-                    reporter:Usuarios_Auth (name, email)
+                    id, avance, fecha, observaciones, created_at, item_id, id_licitacion, user_id
                 `)
                 .order('created_at', { ascending: false })
                 .limit(limit);
 
             if (error) throw error;
+            const parts = await attachReporterProfiles(rawParts || []);
             if (!parts || parts.length === 0) return [];
 
             // 2. Resolve Items (Public only)
@@ -616,13 +634,14 @@ export const api = {
             if (planError) throw planError;
 
             // 2. Fetch Progress
-            const { data: reports, error: reportsError } = await supabaseMobile
+            const { data: rawReports, error: reportsError } = await supabaseMobile
                 .from('partes_diarios')
-                .select('item_id, avance, fecha, created_at, id, observaciones, reporter:Usuarios_Auth(name)')
+                .select('item_id, avance, fecha, created_at, id, observaciones, user_id')
                 .eq('id_licitacion', licitacionId)
                 .order('created_at', { ascending: false });
 
             if (reportsError) throw reportsError;
+            const reports = await attachReporterProfiles(rawReports || []);
 
             const progressMap = new Map();
             reports?.forEach(report => {
