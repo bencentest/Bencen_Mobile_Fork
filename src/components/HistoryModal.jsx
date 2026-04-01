@@ -7,7 +7,7 @@ import { ProgressModal } from './ProgressModal';
 export function HistoryModal({ item, onClose, onUpdate, currentRole = null }) {
     const [history, setHistory] = useState([]);
     const [loading, setLoading] = useState(true);
-    const [estimatedPlanSeries, setEstimatedPlanSeries] = useState([]); // datos_licitaciones_avances (cumulative by period)
+    const [estimatedPlanSeries, setEstimatedPlanSeries] = useState([]); // Datos_Licitaciones_Avances (cumulative by period)
     const [plannedWindow, setPlannedWindow] = useState(null); // { startDate, endDate }
     const [zoomMode, setZoomMode] = useState('plan'); // plan | toReal
     const [editingEntry, setEditingEntry] = useState(null);
@@ -35,7 +35,7 @@ export function HistoryModal({ item, onClose, onUpdate, currentRole = null }) {
             const data = await api.getItemHistory(item.id);
             setHistory(data);
 
-            // Estimated plan curve (datos_licitaciones_avances.avance_estimado by periods).
+            // Estimated plan curve (Datos_Licitaciones_Avances.avance_estimado by periods).
             const licId = item?.id_licitacion;
             if (licId) {
                 const pw = await api.getPlannedWindowByEstimado({ licitacionId: licId, itemIds: [item.id] });

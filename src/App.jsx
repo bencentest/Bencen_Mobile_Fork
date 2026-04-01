@@ -131,9 +131,9 @@ function App() {
 
   const checkUserRole = async (userId) => {
     try {
-      // New schema (preferred): reports_users.role_mobile -> usuarios_roles.id
+      // New schema (preferred): Usuarios_Auth.role_mobile -> Usuarios_Roles.id
       const { data: profile, error: profileError } = await supabase
-        .from('reports_users')
+        .from('Usuarios_Auth')
         .select('name, role_mobile')
         .eq('id', userId)
         .maybeSingle();
@@ -145,7 +145,7 @@ function App() {
 
         if (profile.role_mobile) {
           const { data: roleRow, error: roleError } = await supabase
-            .from('usuarios_roles')
+            .from('Usuarios_Roles')
             .select('rol')
             .eq('id', profile.role_mobile)
             .maybeSingle();
@@ -162,7 +162,7 @@ function App() {
         return;
       }
 
-      setUserRole('pending'); // User Auth exists but not in reports_users yet
+      setUserRole('pending'); // User Auth exists but not in Usuarios_Auth yet
     } catch (err) {
       console.error(err);
     } finally {

@@ -1,7 +1,7 @@
-import { supabase } from './supabase';
+import { supabase, supabaseMobile } from './supabase';
 
-// Mobile roles/users live in `reports_users`.
-// `reports_users.role_mobile -> usuarios_roles.id`.
+// Mobile roles/users live in `Usuarios_Auth`.
+// `Usuarios_Auth.role_mobile -> Usuarios_Roles.id`.
 const roleNameByIdCache = new Map();
 const roleIdByNameCache = new Map();
 
@@ -11,7 +11,7 @@ async function getRoleNameById(roleId) {
     if (roleNameByIdCache.has(key)) return roleNameByIdCache.get(key);
 
     const { data, error } = await supabase
-        .from('usuarios_roles')
+        .from('Usuarios_Roles')
         .select('rol')
         .eq('id', roleId)
         .maybeSingle();
@@ -29,7 +29,7 @@ async function getRoleIdByName(roleName) {
 
     // If there are duplicates across applications, prefer the latest id (common in this DB).
     const { data, error } = await supabase
-        .from('usuarios_roles')
+        .from('Usuarios_Roles')
         .select('id')
         .eq('rol', key)
         .order('id', { ascending: false })
@@ -47,7 +47,7 @@ async function getCurrentMobileRole() {
     if (!user) return null;
 
     const { data: profile, error: profileError } = await supabase
-        .from('reports_users')
+        .from('Usuarios_Auth')
         .select('role_mobile')
         .eq('id', user.id)
         .maybeSingle();
@@ -64,7 +64,7 @@ export const api = {
     getItems: async (licitacionId) => {
         try {
             const { data, error } = await supabase
-                .from('datos_licitaciones_plan_trabajo')
+                .from('Datos_Licitaciones_Plan_Trabajo')
                 .select('id, id_licitacion, orden, grupo, subgrupo, grupo_parent, subgrupo_parent, item, descripcion, unidad, cantidad')
                 .eq('id_licitacion', licitacionId)
                 .lt('orden', 9000)
@@ -82,7 +82,7 @@ export const api = {
     getItemHistory: async (itemId) => {
         try {
             // Fetch history with user details
-            const { data, error } = await supabase
+            const { data, error } = await supabaseMobile
                 .from('partes_diarios')
                 .select(`
                     id,
@@ -93,7 +93,7 @@ export const api = {
                     photos,
                     fecha_inicio,
                     fecha_fin,
-                    reporter:reports_users (
+                    reporter:Usuarios_Auth (
                         name,
                         email
                     )
@@ -113,7 +113,7 @@ export const api = {
     getActiveItemIds: async (licitacionId) => {
         try {
             // Fetch item_ids and their individual progress chunks
-            const { data, error } = await supabase
+            const { data, error } = await supabaseMobile
                 .from('partes_diarios')
                 .select('item_id, avance')
                 .eq('id_licitacion', licitacionId);
@@ -137,7 +137,7 @@ export const api = {
 
     checkDateOverlap: async (itemId, start, end, excludeId = null) => {
         if (!start || !end) return false;
-        let query = supabase.from('partes_diarios')
+        let query = supabaseMobile.from('partes_diarios')
             .select('id', { count: 'exact', head: true })
             .eq('item_id', itemId)
             // Overlap logic: (StartA <= EndB) and (EndA >= StartB)
@@ -190,7 +190,7 @@ export const api = {
         }
 
         try {
-            const { data, error } = await supabase
+            const { data, error } = await supabaseMobile
                 .from('partes_diarios')
                 .insert([{
                     item_id,
@@ -220,7 +220,7 @@ export const api = {
                 throw new Error("La fecha de inicio no puede ser mayor al fin.");
             }
 
-            const { data, error } = await supabase
+            const { data, error } = await supabaseMobile
                 .from('partes_diarios')
                 .update({
                     avance: parseFloat(payload.avance),
@@ -243,7 +243,7 @@ export const api = {
 
     deleteProgress: async (id) => {
         try {
-            const { data, error } = await supabase
+            const { data, error } = await supabaseMobile
                 .from('partes_diarios')
                 .delete()
                 .eq('id', id)
@@ -268,7 +268,7 @@ export const api = {
 
             // 3. Base Query for Active Projects
             let query = supabase
-                .from('datos_licitaciones')
+                .from('Datos_Licitaciones')
                 .select('id_licitacion, nombre_abreviado')
                 .eq('obra_activa', true)
                 .order('nombre_abreviado', { ascending: true });
@@ -278,8 +278,8 @@ export const api = {
                 // Admins see all active projects
             } else {
                 // Engineers see only assigned projects
-                const { data: permissions } = await supabase
-                    .from('reports_users_licitaciones')
+                const { data: permissions } = await supabaseMobile
+                    .from('Usuarios_Auth_licitaciones')
                     .select('licitacion_id')
                     .eq('user_id', user.id);
 
@@ -329,11 +329,11 @@ export const api = {
     getRecentActivity: async (limit = 20) => {
         try {
             // 1. Fetch recent parts with user info
-            const { data: parts, error } = await supabase
+            const { data: parts, error } = await supabaseMobile
                 .from('partes_diarios')
                 .select(`
                     id, avance, fecha, observaciones, created_at, item_id, id_licitacion,
-                    reporter:reports_users (name, email)
+                    reporter:Usuarios_Auth (name, email)
                 `)
                 .order('created_at', { ascending: false })
                 .limit(limit);
@@ -346,7 +346,7 @@ export const api = {
 
             // Public Table (ID -> details)
             const { data: publicItems } = await supabase
-                .from('datos_licitaciones_plan_trabajo')
+                .from('Datos_Licitaciones_Plan_Trabajo')
                 .select('id, item, descripcion, id_licitacion')
                 .in('id', itemIds);
 
@@ -361,7 +361,7 @@ export const api = {
             ]);
 
             const { data: projects } = await supabase
-                .from('datos_licitaciones')
+                .from('Datos_Licitaciones')
                 .select('id_licitacion, nombre_abreviado')
                 .in('id_licitacion', [...allLicIds].filter(Boolean));
 
@@ -400,22 +400,22 @@ export const api = {
             const todayISO = new Date().toISOString().split('T')[0] + 'T00:00:00.000Z';
 
             // Base queries
-            let projectsQuery = supabase.from('datos_licitaciones').select('id_licitacion', { count: 'exact', head: true }).eq('obra_activa', true);
+            let projectsQuery = supabase.from('Datos_Licitaciones').select('id_licitacion', { count: 'exact', head: true }).eq('obra_activa', true);
             let engineersQuery = (async () => {
                 const engineerRoleId = await getRoleIdByName('engineer');
                 if (engineerRoleId) {
-                    return supabase.from('reports_users').select('id', { count: 'exact', head: true }).eq('role_mobile', engineerRoleId);
+                    return supabase.from('Usuarios_Auth').select('id', { count: 'exact', head: true }).eq('role_mobile', engineerRoleId);
                 }
-                return supabase.from('reports_users').select('id', { count: 'exact', head: true }).eq('role_mobile', -1);
+                return supabase.from('Usuarios_Auth').select('id', { count: 'exact', head: true }).eq('role_mobile', -1);
             })();
-            let reportsQuery = supabase.from('partes_diarios').select('id', { count: 'exact', head: true }).gte('created_at', todayISO);
+            let reportsQuery = supabaseMobile.from('partes_diarios').select('id', { count: 'exact', head: true }).gte('created_at', todayISO);
 
             // Apply filters
             if (licitacionId) {
                 projectsQuery = projectsQuery.eq('id_licitacion', licitacionId);
                 // For engineers, we check permissions (approximated by checking distinct users assigned)
                 // Count assigned users in this licitacion (1 row per user due to unique constraint)
-                engineersQuery = supabase.from('reports_users_licitaciones').select('user_id', { count: 'exact', head: true }).eq('licitacion_id', licitacionId);
+                engineersQuery = supabaseMobile.from('Usuarios_Auth_licitaciones').select('user_id', { count: 'exact', head: true }).eq('licitacion_id', licitacionId);
                 reportsQuery = reportsQuery.eq('id_licitacion', licitacionId);
             }
 
@@ -430,14 +430,14 @@ export const api = {
             if (licitacionId) {
                 // 1. Total Items
                 const { count: tCount } = await supabase
-                    .from('datos_licitaciones_plan_trabajo')
+                    .from('Datos_Licitaciones_Plan_Trabajo')
                     .select('id', { count: 'exact', head: true })
                     .eq('id_licitacion', licitacionId);
                 totalItems = tCount || 0;
 
                 // 2. Completed Items (Calculated from Advances)
                 const { data: advances } = await supabase
-                    .from('datos_licitaciones_avances')
+                    .from('Datos_Licitaciones_Avances')
                     .select('id_item, avance_real')
                     .eq('id_licitacion', licitacionId);
 
@@ -478,7 +478,7 @@ export const api = {
             }
 
             // 1. Fetch Parts in Range (Using FECHA_FIN as requested)
-            let query = supabase
+            let query = supabaseMobile
                 .from('partes_diarios')
                 .select(`
                     id, avance, fecha, fecha_fin, created_at, item_id, id_licitacion
@@ -508,7 +508,7 @@ export const api = {
 
                 // A. Direct Match
                 const { data: publicItems } = await supabase
-                    .from('datos_licitaciones_plan_trabajo')
+                    .from('Datos_Licitaciones_Plan_Trabajo')
                     .select('id, item, pu_mod_mo, pu_mod_mat, pu_mod_eq, cantidad, id_licitacion')
                     .in('id', itemIds);
 
@@ -555,7 +555,7 @@ export const api = {
 
             // 2. Fetch Project Definition (Total Scope)
             const { data: projectItems, error: itemsErr } = await supabase
-                .from('datos_licitaciones_plan_trabajo')
+                .from('Datos_Licitaciones_Plan_Trabajo')
                 .select('id, item, cantidad, pu_mod_mo, pu_mod_mat, pu_mod_eq')
                 .eq('id_licitacion', licitacionId);
 
@@ -575,7 +575,7 @@ export const api = {
             });
 
             // 3. Fetch Execution (Parts)
-            const { data: parts, error: partsErr } = await supabase
+            const { data: parts, error: partsErr } = await supabaseMobile
                 .from('partes_diarios')
                 .select('item_id, avance')
                 .eq('id_licitacion', licitacionId);
@@ -608,7 +608,7 @@ export const api = {
         try {
             // 1. Fetch Plan Structure (All rows including Groups/Subgroups)
             const { data: plan, error: planError } = await supabase
-                .from('datos_licitaciones_plan_trabajo')
+                .from('Datos_Licitaciones_Plan_Trabajo')
                 .select('id, id_licitacion, item, grupo, subgrupo, descripcion, unidad, cantidad, pu_mod_mo, pu_mod_mat, pu_mod_eq, orden')
                 .eq('id_licitacion', licitacionId)
                 .order('orden', { ascending: true }); // Crucial for structure
@@ -616,9 +616,9 @@ export const api = {
             if (planError) throw planError;
 
             // 2. Fetch Progress
-            const { data: reports, error: reportsError } = await supabase
+            const { data: reports, error: reportsError } = await supabaseMobile
                 .from('partes_diarios')
-                .select('item_id, avance, fecha, created_at, id, observaciones, reporter:reports_users(name)')
+                .select('item_id, avance, fecha, created_at, id, observaciones, reporter:Usuarios_Auth(name)')
                 .eq('id_licitacion', licitacionId)
                 .order('created_at', { ascending: false });
 
@@ -850,7 +850,7 @@ export const api = {
             let rows = [];
             for (const chunk of chunks) {
                 const { data, error } = await supabase
-                    .from('datos_licitaciones_avances')
+                    .from('Datos_Licitaciones_Avances')
                     .select('id_periodo, id_item, avance_real, avance_estimado')
                     .eq('id_licitacion', licitacionId)
                     .in('id_periodo', periodIds)
@@ -946,7 +946,7 @@ export const api = {
             let minRow = null;
             for (const chunk of chunks) {
                 const { data, error } = await supabase
-                    .from('datos_licitaciones_avances')
+                    .from('Datos_Licitaciones_Avances')
                     .select('id_periodo')
                     .eq('id_licitacion', licitacionId)
                     .in('id_item', chunk)
@@ -964,7 +964,7 @@ export const api = {
             let maxRow = null;
             for (const chunk of chunks) {
                 const { data, error } = await supabase
-                    .from('datos_licitaciones_avances')
+                    .from('Datos_Licitaciones_Avances')
                     .select('id_periodo')
                     .eq('id_licitacion', licitacionId)
                     .in('id_item', chunk)
@@ -1006,7 +1006,7 @@ export const api = {
     ,
 
     // For the item history chart: returns cumulative estimated % by arbitrary dates (ISO YYYY-MM-DD).
-    // Estimado is read from datos_licitaciones_avances.avance_estimado per periodo.
+    // Estimado is read from Datos_Licitaciones_Avances.avance_estimado per periodo.
     getItemEstimatedTimeline: async ({ licitacionId, itemId, dates }) => {
         try {
             if (!licitacionId || !itemId) return {};
@@ -1026,7 +1026,7 @@ export const api = {
             const periodIds = periods.map(p => p.id).filter(Boolean);
 
             const { data: avances, error: aErr } = await supabase
-                .from('datos_licitaciones_avances')
+                .from('Datos_Licitaciones_Avances')
                 .select('id_periodo, avance_estimado')
                 .eq('id_licitacion', licitacionId)
                 .eq('id_item', itemId)
@@ -1102,7 +1102,7 @@ export const api = {
             let minPid = null;
             for (const chunk of chunks) {
                 const { data, error } = await supabase
-                    .from('datos_licitaciones_avances')
+                    .from('Datos_Licitaciones_Avances')
                     .select('id_periodo')
                     .eq('id_licitacion', licitacionId)
                     .in('id_item', chunk)
@@ -1120,7 +1120,7 @@ export const api = {
             let maxPid = null;
             for (const chunk of chunks) {
                 const { data, error } = await supabase
-                    .from('datos_licitaciones_avances')
+                    .from('Datos_Licitaciones_Avances')
                     .select('id_periodo')
                     .eq('id_licitacion', licitacionId)
                     .in('id_item', chunk)
@@ -1228,7 +1228,7 @@ export const api = {
 
             for (const chunk of chunks) {
                 const { data: avances, error: aErr } = await supabase
-                    .from('datos_licitaciones_avances')
+                    .from('Datos_Licitaciones_Avances')
                     .select('id_item, id_periodo, avance_estimado')
                     .eq('id_licitacion', licitacionId)
                     .in('id_item', chunk)
@@ -1246,7 +1246,7 @@ export const api = {
 
             // --- Real: sum partes_diarios.avance per item per month (by fecha_fin or fecha) ---
             for (const chunk of chunks) {
-                const { data: parts, error: rErr } = await supabase
+                const { data: parts, error: rErr } = await supabaseMobile
                     .from('partes_diarios')
                     .select('id, item_id, avance, fecha, fecha_fin')
                     .eq('id_licitacion', licitacionId)
@@ -1327,7 +1327,7 @@ export const api = {
 
             let rows = [];
             for (const chunk of chunks) {
-                let q = supabase
+                let q = supabaseMobile
                     .from('partes_diarios')
                     .select('id, item_id, avance, fecha, fecha_inicio, fecha_fin, created_at, observaciones')
                     .eq('id_licitacion', licitacionId)

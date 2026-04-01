@@ -271,7 +271,7 @@ function CreateUserModal({ onClose, onSuccess, currentRole }) {
                 const fetchUsers = async () => {
                     // Prefer to include approval flag, but keep backwards-compat if the column doesn't exist yet.
                     const res = await supabase
-                        .from('reports_users')
+                        .from('Usuarios_Auth')
                         .select('id, email, name, role_mobile, mobile_admin_visible')
                         .order('name', { ascending: true, nullsFirst: false });
 
@@ -280,7 +280,7 @@ function CreateUserModal({ onClose, onSuccess, currentRole }) {
                     const msg = String(res.error?.message || '');
                     if (msg.toLowerCase().includes('mobile_admin_visible')) {
                         const fallback = await supabase
-                            .from('reports_users')
+                            .from('Usuarios_Auth')
                             .select('id, email, name, role_mobile')
                             .order('name', { ascending: true, nullsFirst: false });
                         return { ...fallback, supportsApproval: false };
@@ -292,7 +292,7 @@ function CreateUserModal({ onClose, onSuccess, currentRole }) {
                 const [uRes, rRes] = await Promise.all([
                     fetchUsers(),
                     supabase
-                        .from('usuarios_roles')
+                        .from('Usuarios_Roles')
                         .select('id, rol')
                         .in('rol', ['admin', 'admin_gerencia', 'engineer', 'sobrestante'])
                         .order('id', { ascending: true }),
@@ -385,7 +385,7 @@ function CreateUserModal({ onClose, onSuccess, currentRole }) {
         setSaving(true);
         try {
             const { error: upErr } = await supabase
-                .from('reports_users')
+                .from('Usuarios_Auth')
                 // Ensure it shows up in Admin "Gestion de Usuarios" list even if it was previously hidden.
                 .update({ role_mobile: Number(selectedRoleId), mobile_manage_visible: true })
                 .eq('id', selectedUserId);
@@ -461,10 +461,10 @@ function CreateUserModal({ onClose, onSuccess, currentRole }) {
                             {visibleUsers.length === 0 && (
                                 <p className="text-xs text-neutral-400 mt-2">
                                     {isGerencia
-                                        ? 'No hay usuarios pendientes en reports_users.'
+                                        ? 'No hay usuarios pendientes en Usuarios_Auth.'
                                         : (supportsApproval
                                             ? 'No hay usuarios habilitados por Gerencia para asignar rol.'
-                                            : 'No hay usuarios pendientes en reports_users. (Falta configurar aprobaciones de Gerencia)')}
+                                            : 'No hay usuarios pendientes en Usuarios_Auth. (Falta configurar aprobaciones de Gerencia)')}
                                 </p>
                             )}
                         </div>
@@ -538,7 +538,7 @@ function AdminGerenciaSettingsModal({ onClose, onUpdated, onVisibilityChange }) 
             setError(null);
             try {
                 const res = await supabase
-                    .from('reports_users')
+                    .from('Usuarios_Auth')
                     .select('id, email, name, role_mobile, mobile_admin_visible')
                     .order('name', { ascending: true, nullsFirst: false });
 
@@ -563,7 +563,7 @@ function AdminGerenciaSettingsModal({ onClose, onUpdated, onVisibilityChange }) 
         setSavingId(String(userId));
         try {
             const { error: upErr } = await supabase
-                .from('reports_users')
+                .from('Usuarios_Auth')
                 .update({ mobile_admin_visible: Boolean(approved) })
                 .eq('id', userId);
 
@@ -600,7 +600,7 @@ function AdminGerenciaSettingsModal({ onClose, onUpdated, onVisibilityChange }) 
                         <div className="bg-red-50 text-red-700 text-sm p-3 rounded-xl border border-red-100">
                             {error}
                             <div className="text-xs text-red-600 mt-2">
-                            Falta la columna `reports_users.mobile_admin_visible`.
+                            Falta la columna `Usuarios_Auth.mobile_admin_visible`.
                             </div>
                         </div>
                     ) : pending.length === 0 ? (
@@ -645,7 +645,7 @@ function UserListModal({ onClose, currentRole }) {
     useEffect(() => {
         fetchUsers();
         supabase
-            .from('usuarios_roles')
+            .from('Usuarios_Roles')
             .select('id, rol')
             .in('rol', ['admin', 'admin_gerencia', 'engineer', 'sobrestante'])
             .order('id', { ascending: true })
@@ -658,7 +658,7 @@ function UserListModal({ onClose, currentRole }) {
 
     const fetchUsers = async () => {
         const primary = await supabase
-            .from('reports_users')
+            .from('Usuarios_Auth')
             .select('id, email, name, role_mobile, mobile_manage_visible')
             .not('role_mobile', 'is', null) // Gestion: solo usuarios activos (con rol asignado)
             .order('name', { ascending: true, nullsFirst: false });
@@ -675,7 +675,7 @@ function UserListModal({ onClose, currentRole }) {
         const msg = String(primary.error?.message || '');
         if (msg.toLowerCase().includes('mobile_manage_visible')) {
             const fallback = await supabase
-                .from('reports_users')
+                .from('Usuarios_Auth')
                 .select('id, email, name, role_mobile')
                 .not('role_mobile', 'is', null)
                 .order('name', { ascending: true, nullsFirst: false });
@@ -697,7 +697,7 @@ function UserListModal({ onClose, currentRole }) {
 
         try {
             const { error } = await supabase
-                .from('reports_users')
+                .from('Usuarios_Auth')
                 .update({ role_mobile: Number(newRoleId) })
                 .eq('id', userId);
 
@@ -718,13 +718,13 @@ function UserListModal({ onClose, currentRole }) {
         setRemovingUserId(String(u.id));
         try {
             const { error: delErr } = await supabase
-                .from('reports_users_licitaciones')
+                .from('Usuarios_Auth_licitaciones')
                 .delete()
                 .eq('user_id', u.id);
             if (delErr) throw delErr;
 
             const { error: updErr } = await supabase
-                .from('reports_users')
+                .from('Usuarios_Auth')
                 .update({ role_mobile: null, mobile_admin_visible: false })
                 .eq('id', u.id);
             if (updErr) throw updErr;
@@ -742,7 +742,7 @@ function UserListModal({ onClose, currentRole }) {
     const toggleManageVisibility = async (u) => {
         if (!u?.id) return;
         if (!supportsManageVisibility) {
-            alert("Falta la columna reports_users.mobile_manage_visible en la base.");
+            alert("Falta la columna Usuarios_Auth.mobile_manage_visible en la base.");
             return;
         }
 
@@ -750,7 +750,7 @@ function UserListModal({ onClose, currentRole }) {
         setVisibilitySavingId(String(u.id));
         try {
             const { error } = await supabase
-                .from('reports_users')
+                .from('Usuarios_Auth')
                 .update({ mobile_manage_visible: next })
                 .eq('id', u.id);
             if (error) throw error;
@@ -876,8 +876,8 @@ function PermissionsModal({ user, onClose }) {
 
     const loadData = async () => {
         try {
-            const { data: allProjects } = await supabase.from('datos_licitaciones').select('id_licitacion, nombre_abreviado').eq('obra_activa', true).order('nombre_abreviado');
-            const { data: perms } = await supabase.from('reports_users_licitaciones').select('licitacion_id').eq('user_id', user.id);
+            const { data: allProjects } = await supabase.from('Datos_Licitaciones').select('id_licitacion, nombre_abreviado').eq('obra_activa', true).order('nombre_abreviado');
+            const { data: perms } = await supabase.from('Usuarios_Auth_licitaciones').select('licitacion_id').eq('user_id', user.id);
             setProjects(allProjects || []);
             // Normalize to string to avoid Set.has mismatches (number vs string ids)
             setUserPermissions(new Set((perms || []).map(p => String(p.licitacion_id))));
