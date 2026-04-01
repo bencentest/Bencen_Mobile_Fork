@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { supabase } from '../services/supabase';
+import { supabase, supabaseMobile } from '../services/supabase';
 import { api } from '../services/api';
 import { Users, Shield, Plus, X, Loader2, LogOut, Search, UserPlus, CheckCircle2, Bell, BarChart2, Settings, Eye, EyeOff } from 'lucide-react';
 import { AdminMetrics } from './admin/AdminMetrics';
@@ -717,7 +717,7 @@ function UserListModal({ onClose, currentRole }) {
 
         setRemovingUserId(String(u.id));
         try {
-            const { error: delErr } = await supabase
+            const { error: delErr } = await supabaseMobile
                 .from('Usuarios_Auth_licitaciones')
                 .delete()
                 .eq('user_id', u.id);
@@ -877,7 +877,7 @@ function PermissionsModal({ user, onClose }) {
     const loadData = async () => {
         try {
             const { data: allProjects } = await supabase.from('Datos_Licitaciones').select('id_licitacion, nombre_abreviado').eq('obra_activa', true).order('nombre_abreviado');
-            const { data: perms } = await supabase.from('Usuarios_Auth_licitaciones').select('licitacion_id').eq('user_id', user.id);
+            const { data: perms } = await supabaseMobile.from('Usuarios_Auth_licitaciones').select('licitacion_id').eq('user_id', user.id);
             setProjects(allProjects || []);
             // Normalize to string to avoid Set.has mismatches (number vs string ids)
             setUserPermissions(new Set((perms || []).map(p => String(p.licitacion_id))));
