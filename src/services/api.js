@@ -279,7 +279,7 @@ export const api = {
             } else {
                 // Engineers see only assigned projects
                 const { data: permissions } = await supabaseMobile
-                    .from('Usuarios_Auth_licitaciones')
+                    .from('reports_users_licitaciones')
                     .select('licitacion_id')
                     .eq('user_id', user.id);
 
@@ -415,7 +415,7 @@ export const api = {
                 projectsQuery = projectsQuery.eq('id_licitacion', licitacionId);
                 // For engineers, we check permissions (approximated by checking distinct users assigned)
                 // Count assigned users in this licitacion (1 row per user due to unique constraint)
-                engineersQuery = supabaseMobile.from('Usuarios_Auth_licitaciones').select('user_id', { count: 'exact', head: true }).eq('licitacion_id', licitacionId);
+                engineersQuery = supabaseMobile.from('reports_users_licitaciones').select('user_id', { count: 'exact', head: true }).eq('licitacion_id', licitacionId);
                 reportsQuery = reportsQuery.eq('id_licitacion', licitacionId);
             }
 

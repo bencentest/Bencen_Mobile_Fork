@@ -10,8 +10,5 @@ if (!supabaseUrl || !supabaseKey) {
 // Default client
 export const supabase = createClient(supabaseUrl || '', supabaseKey || '')
 
-// Client for Mobile schema tables
-export const supabaseMobile = createClient(supabaseUrl || '', supabaseKey || '', {
-    db: { schema: 'Mobile' },
-    auth: { persistSession: false }
-})
+// Reuse the authenticated client for Mobile schema tables so RLS sees the current user session.
+export const supabaseMobile = supabase.schema('Mobile')

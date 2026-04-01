@@ -718,7 +718,7 @@ function UserListModal({ onClose, currentRole }) {
         setRemovingUserId(String(u.id));
         try {
             const { error: delErr } = await supabaseMobile
-                .from('Usuarios_Auth_licitaciones')
+                .from('reports_users_licitaciones')
                 .delete()
                 .eq('user_id', u.id);
             if (delErr) throw delErr;
@@ -877,7 +877,7 @@ function PermissionsModal({ user, onClose }) {
     const loadData = async () => {
         try {
             const { data: allProjects } = await supabase.from('Datos_Licitaciones').select('id_licitacion, nombre_abreviado').eq('obra_activa', true).order('nombre_abreviado');
-            const { data: perms } = await supabaseMobile.from('Usuarios_Auth_licitaciones').select('licitacion_id').eq('user_id', user.id);
+            const { data: perms } = await supabaseMobile.from('reports_users_licitaciones').select('licitacion_id').eq('user_id', user.id);
             setProjects(allProjects || []);
             // Normalize to string to avoid Set.has mismatches (number vs string ids)
             setUserPermissions(new Set((perms || []).map(p => String(p.licitacion_id))));
