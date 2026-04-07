@@ -3,6 +3,8 @@ import { supabase } from './services/supabase';
 import { ProjectSelector } from './components/ProjectSelector';
 import { ItemsList } from './components/ItemsList';
 import { Login } from './components/Login';
+import { ForgotPassword } from './components/ForgotPassword';
+import { ResetPassword } from './components/ResetPassword';
 import { AdminDashboard } from './components/AdminDashboard';
 import { Loader2, LogOut } from 'lucide-react';
 import logo from './assets/logo.png';
@@ -39,6 +41,7 @@ function getLocalIsoDate() {
 
 
 function App() {
+  const currentPath = window.location.pathname;
   const [session, setSession] = useState(null);
   const [userRole, setUserRole] = useState(null); // 'admin', 'engineer', or null
   const [userName, setUserName] = useState(null); // NEW: Store User Name
@@ -181,6 +184,14 @@ function App() {
         <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" />
       </div>
     );
+  }
+
+  if (currentPath === '/forgot-password') {
+    return <ForgotPassword />;
+  }
+
+  if (currentPath === '/reset-password') {
+    return <ResetPassword onBackToLogin={() => window.location.replace('/')} />;
   }
 
   // 1. No Session -> Login

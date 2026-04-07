@@ -102,6 +102,12 @@ export function Login({ onLoginSuccess }) {
                         {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Ingresar"}
                     </button>
 
+                    <div className="text-right">
+                        <a href="/forgot-password" className="text-xs font-semibold text-[#FF884D] hover:underline transition-all">
+                            Olvidé mi contraseña
+                        </a>
+                    </div>
+
                     {/* Explicitly omitting registration link as requested */}
                 </form>
             </div>
