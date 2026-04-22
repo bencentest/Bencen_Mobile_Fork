@@ -185,3 +185,8 @@ Migration file added for this transition:
 3. Load project detail data with `api.getProjectDetails(projectId)`
 4. Open item history from feed / plan / ranking
 5. Refresh parent detail only if the history modal actually changed data
+
+## Seguridad REST Supabase
+Regla obligatoria: despues de un login exitoso, todas las llamadas REST internas de la app deben usar el token autenticado de sesion del usuario (`access_token`).
+Nunca usar la clave ANON en el header `Authorization` para operaciones REST post-login.
+La clave ANON solo puede usarse como `apikey` y para flujos de autenticacion inicial (login/refresh), no como bearer token de datos.

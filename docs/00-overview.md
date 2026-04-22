@@ -86,3 +86,8 @@ Important behavior:
 - Keys are now scoped by `user.id` for selected project and admin project state.
 - At midnight local time the app clears `bencen_*` keys and logs the user out.
 - On session end/logout, the same cleanup is performed.
+
+## Seguridad REST Supabase
+Regla obligatoria: despues de un login exitoso, todas las llamadas REST internas de la app deben usar el token autenticado de sesion del usuario (`access_token`).
+Nunca usar la clave ANON en el header `Authorization` para operaciones REST post-login.
+La clave ANON solo puede usarse como `apikey` y para flujos de autenticacion inicial (login/refresh), no como bearer token de datos.

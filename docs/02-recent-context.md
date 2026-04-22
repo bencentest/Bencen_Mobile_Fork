@@ -119,3 +119,8 @@ Fix:
   - row exists in `reports_users`
   - role exists in `usuarios_roles`
   - `partes_diarios.user_id` FK points to `reports_users`
+
+## Seguridad REST Supabase
+Regla obligatoria: despues de un login exitoso, todas las llamadas REST internas de la app deben usar el token autenticado de sesion del usuario (`access_token`).
+Nunca usar la clave ANON en el header `Authorization` para operaciones REST post-login.
+La clave ANON solo puede usarse como `apikey` y para flujos de autenticacion inicial (login/refresh), no como bearer token de datos.
