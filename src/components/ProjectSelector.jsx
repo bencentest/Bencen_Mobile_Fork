@@ -1,22 +1,29 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import { Building2, ChevronRight, Loader2 } from 'lucide-react';
+import { getCachedValue, setCachedValue } from '../services/appCache';
 
-export function ProjectSelector({ onSelect }) {
-    const [projects, setProjects] = useState([]);
-    const [loading, setLoading] = useState(true);
+export function ProjectSelector({ onSelect, currentUserId }) {
+    const cacheKey = currentUserId ? `projects_${currentUserId}` : null;
+    const [projects, setProjects] = useState(() => (cacheKey ? (getCachedValue(cacheKey) || []) : []));
+    const [loading, setLoading] = useState(() => !cacheKey || !getCachedValue(cacheKey));
 
     useEffect(() => {
+        if (cacheKey && getCachedValue(cacheKey)) return;
+
         api.getLicitaciones()
             .then(data => {
                 setProjects(data);
+                if (cacheKey) {
+                    setCachedValue(cacheKey, data);
+                }
                 setLoading(false);
             })
             .catch(err => {
                 console.error(err);
                 setLoading(false);
             });
-    }, []);
+    }, [cacheKey]);
 
     if (loading) {
         return (

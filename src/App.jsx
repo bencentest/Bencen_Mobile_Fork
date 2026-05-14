@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from './services/supabase';
 import { ProjectSelector } from './components/ProjectSelector';
 import { ItemsList } from './components/ItemsList';
@@ -8,28 +8,8 @@ import { ResetPassword } from './components/ResetPassword';
 import { AdminDashboard } from './components/AdminDashboard';
 import { Loader2, LogOut } from 'lucide-react';
 import logo from './assets/logo.png';
-
-const APP_STORAGE_PREFIX = 'bencen_';
-
-function getScopedStorageKey(userId, suffix) {
-  if (!userId) return `${APP_STORAGE_PREFIX}${suffix}`;
-  return `${APP_STORAGE_PREFIX}${userId}_${suffix}`;
-}
-
-function clearAppStorage() {
-  try {
-    const keysToRemove = [];
-    for (let i = 0; i < localStorage.length; i += 1) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(APP_STORAGE_PREFIX)) {
-        keysToRemove.push(key);
-      }
-    }
-    keysToRemove.forEach((key) => localStorage.removeItem(key));
-  } catch {
-    void 0;
-  }
-}
+import { getMobileAccessState } from './services/mobileAccess';
+import { clearAppStorage, getScopedStorageKey, readStorage, writeStorage } from './services/storage';
 
 function getLocalIsoDate() {
   const now = new Date();
@@ -47,6 +27,11 @@ function App() {
   const [userName, setUserName] = useState(null); // NEW: Store User Name
   const [loading, setLoading] = useState(true);
   const [selectedProject, setSelectedProject] = useState(null);
+  const currentUserIdRef = useRef(null);
+
+  useEffect(() => {
+    currentUserIdRef.current = session?.user?.id ?? null;
+  }, [session?.user?.id]);
 
   useEffect(() => {
     const userId = session?.user?.id;
@@ -56,7 +41,7 @@ function App() {
     }
 
     try {
-      const saved = localStorage.getItem(getScopedStorageKey(userId, 'engineer_project'));
+      const saved = readStorage(getScopedStorageKey(userId, 'engineer_project'));
       setSelectedProject(saved ? JSON.parse(saved) : null);
     } catch {
       setSelectedProject(null);
@@ -70,7 +55,7 @@ function App() {
     const key = getScopedStorageKey(userId, 'engineer_project');
     try {
       if (selectedProject) {
-        localStorage.setItem(key, JSON.stringify(selectedProject));
+        writeStorage(key, JSON.stringify(selectedProject));
       } else {
         localStorage.removeItem(key);
       }
@@ -79,112 +64,197 @@ function App() {
     }
   }, [session?.user?.id, selectedProject]);
 
-  useEffect(() => {
-    // 1. Check active session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session) checkUserRole(session.user.id);
-      else setLoading(false);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) checkUserRole(session.user.id);
-      else {
-        setUserRole(null);
-        setUserName(null);
-        setSelectedProject(null);
-        clearAppStorage();
-        setLoading(false);
-      }
-    });
-
-    return () => subscription.unsubscribe();
+  const resetSessionState = useCallback(({ clearStorage = false } = {}) => {
+    setSession(null);
+    setUserRole(null);
+    setUserName(null);
+    setSelectedProject(null);
+    if (clearStorage) {
+      clearAppStorage();
+    }
   }, []);
 
-  useEffect(() => {
-    const userId = session?.user?.id;
-    if (!userId) return undefined;
+  const handleLogout = useCallback(async () => {
+    clearAppStorage();
+    await supabase.auth.signOut();
+  }, []);
 
-    const dayKey = getScopedStorageKey(userId, 'active_day');
-    const today = getLocalIsoDate();
+  const resolveSessionAccess = useCallback(async (nextSession, options = {}) => {
+    const { silent = false } = options;
 
-    try {
-      const storedDay = localStorage.getItem(dayKey);
-      if (storedDay && storedDay !== today) {
-        void handleLogout();
-        return undefined;
-      }
-      localStorage.setItem(dayKey, today);
-    } catch {
-      void 0;
+    if (!nextSession?.user) {
+      resetSessionState();
+      if (!silent) setLoading(false);
+      return 'no-session';
     }
 
-    const now = new Date();
-    const nextMidnight = new Date(now);
-    nextMidnight.setHours(24, 0, 0, 0);
-    const timeoutMs = Math.max(1000, nextMidnight.getTime() - now.getTime());
+    if (!silent) {
+      setLoading(true);
+    }
 
-    const timeoutId = window.setTimeout(() => {
-      void handleLogout();
-    }, timeoutMs);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [session?.user?.id]);
-
-  const checkUserRole = async (userId) => {
     try {
-      // New schema (preferred): Usuarios_Auth.role_mobile -> Usuarios_Roles.id
-      const { data: profile, error: profileError } = await supabase
-        .from('Usuarios_Auth')
-        .select('name, role_mobile')
-        .eq('id', userId)
-        .maybeSingle();
+      const access = await getMobileAccessState(nextSession.user.id);
+      setSession(nextSession);
+      setUserName(access.userName);
 
-      if (profileError) throw profileError;
+      if (access.status === 'authorized') {
+        setUserRole(access.role);
+        writeStorage(getScopedStorageKey(nextSession.user.id, 'active_day'), getLocalIsoDate());
+        return 'authorized';
+      }
 
-      if (profile) {
-        setUserName(profile.name);
+      if (access.status === 'pending') {
+        setUserRole('pending');
+        writeStorage(getScopedStorageKey(nextSession.user.id, 'active_day'), getLocalIsoDate());
+        return 'pending';
+      }
 
-        if (profile.role_mobile) {
-          const { data: roleRow, error: roleError } = await supabase
-            .from('Usuarios_Roles')
-            .select('rol')
-            .eq('id', profile.role_mobile)
-            .maybeSingle();
+      resetSessionState({ clearStorage: true });
+      return 'unauthorized';
+    } catch (err) {
+      console.error(err);
+      return 'error';
+    } finally {
+      if (!silent) {
+        setLoading(false);
+      }
+    }
+  }, [resetSessionState]);
 
-          if (roleError) throw roleError;
+  useEffect(() => {
+    const isRecoveryPath = currentPath === '/reset-password' || window.location.href.includes('type=recovery');
 
-          const roleName = roleRow?.rol ? String(roleRow.rol).toLowerCase() : null;
-          setUserRole(roleName || 'pending');
+    const hasDayExpired = (userId) => {
+      if (!userId) return false;
+      const dayKey = getScopedStorageKey(userId, 'active_day');
+      const storedDay = readStorage(dayKey);
+      const today = getLocalIsoDate();
+      return !!(storedDay && storedDay !== today);
+    };
+
+    const expireIfNeeded = async (userId) => {
+      if (!userId || isRecoveryPath) return false;
+      if (!hasDayExpired(userId)) return false;
+      await handleLogout();
+      return true;
+    };
+
+    const revalidateCurrentAccess = async () => {
+      const activeUserId = currentUserIdRef.current;
+      if (!activeUserId) return;
+
+      if (await expireIfNeeded(activeUserId)) return;
+
+      try {
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        if (!currentSession?.user) return;
+
+        const accessStatus = await resolveSessionAccess(currentSession, { silent: true });
+        if (accessStatus === 'unauthorized' || accessStatus === 'pending') {
+          await handleLogout();
+        }
+      } catch (error) {
+        console.error('Error revalidating current mobile access:', error);
+      }
+    };
+
+    const initAuth = async () => {
+      try {
+        const { data: { session: initialSession } } = await supabase.auth.getSession();
+
+        if (!initialSession) {
+          setLoading(false);
           return;
         }
 
-        // Auth exists + profile exists, but no role assigned yet
-        setUserRole('pending');
-        return;
+        if (await expireIfNeeded(initialSession.user.id)) {
+          setLoading(false);
+          return;
+        }
+
+        const accessStatus = await resolveSessionAccess(initialSession);
+        if (accessStatus === 'unauthorized') {
+          await supabase.auth.signOut();
+        }
+      } catch (error) {
+        console.error('Error initializing auth:', error);
+        resetSessionState();
+        setLoading(false);
       }
+    };
 
-      setUserRole('pending'); // User Auth exists but not in Usuarios_Auth yet
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      window.setTimeout(() => {
+        void (async () => {
+          const incomingUserId = nextSession?.user?.id ?? null;
+          const isSameUserSession = !!incomingUserId && currentUserIdRef.current === incomingUserId;
 
-  const handleLogout = async () => {
-    clearAppStorage();
-    await supabase.auth.signOut();
-  };
+          if (event === 'SIGNED_IN' || event === 'PASSWORD_RECOVERY') {
+            if (isSameUserSession && event !== 'PASSWORD_RECOVERY') {
+              setSession(nextSession);
+              writeStorage(getScopedStorageKey(incomingUserId, 'active_day'), getLocalIsoDate());
+              const accessStatus = await resolveSessionAccess(nextSession, { silent: true });
+              if (accessStatus === 'unauthorized') {
+                await handleLogout();
+              }
+            } else {
+              if (currentUserIdRef.current && currentUserIdRef.current !== incomingUserId) {
+                clearAppStorage();
+              }
+              await resolveSessionAccess(nextSession);
+            }
+            return;
+          }
 
-  if (loading) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-white">
-        <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" />
-      </div>
-    );
-  }
+          if (event === 'TOKEN_REFRESHED') {
+            if (nextSession) {
+              setSession(nextSession);
+              writeStorage(getScopedStorageKey(nextSession.user.id, 'active_day'), getLocalIsoDate());
+            }
+            return;
+          }
+
+          if (event === 'SIGNED_OUT') {
+            resetSessionState({ clearStorage: true });
+            setLoading(false);
+          }
+        })();
+      }, 0);
+    });
+
+    const handleWindowReturn = () => {
+      void revalidateCurrentAccess();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void revalidateCurrentAccess();
+      }
+    };
+
+    initAuth();
+
+    window.addEventListener('focus', handleWindowReturn);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    const revalidationInterval = window.setInterval(() => {
+      void revalidateCurrentAccess();
+    }, 5 * 60 * 1000);
+    const dayCheckInterval = window.setInterval(() => {
+      const activeUserId = currentUserIdRef.current;
+      if (!activeUserId) return;
+      if (hasDayExpired(activeUserId)) {
+        void handleLogout();
+      }
+    }, 60 * 1000);
+
+    return () => {
+      subscription.unsubscribe();
+      window.removeEventListener('focus', handleWindowReturn);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.clearInterval(revalidationInterval);
+      window.clearInterval(dayCheckInterval);
+    };
+  }, [currentPath, handleLogout, resetSessionState, resolveSessionAccess]);
 
   if (currentPath === '/forgot-password') {
     return <ForgotPassword />;
@@ -196,7 +266,15 @@ function App() {
 
   // 1. No Session -> Login
   if (!session) {
-    return <Login onLoginSuccess={() => setLoading(true)} />;
+    return <Login />;
+  }
+
+  if (loading) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-white">
+        <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" />
+      </div>
+    );
   }
 
   // 2. Pending Role -> Waiting Screen
@@ -227,9 +305,11 @@ function App() {
     if (selectedProject) {
       return (
         <ItemsList
+          key={`items-${session.user.id}-${selectedProject.id_licitacion}`}
           project={selectedProject}
           onBack={() => setSelectedProject(null)}
           currentRole={userRole}
+          currentUserId={session.user.id}
         />
       );
     }
@@ -265,7 +345,7 @@ function App() {
 
         {/* Main Content Area */}
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <ProjectSelector onSelect={setSelectedProject} />
+          <ProjectSelector key={`projects-${session.user.id}`} onSelect={setSelectedProject} currentUserId={session.user.id} />
         </div>
       </>
     );

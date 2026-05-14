@@ -4,17 +4,36 @@ import { Loader2, ArrowLeft, Ruler, ChevronDown, ChevronRight, FileText, LineCha
 import { ProgressModal } from './ProgressModal';
 import { HistoryModal } from './HistoryModal';
 import { AvanceChartModal } from './AvanceChartModal';
+import { getCachedValue, setCachedValue } from '../services/appCache';
+import { usePersistentState } from '../hooks/usePersistentState';
+import { buildStorageKey } from '../services/storage';
 
-export function ItemsList({ project, onBack, currentRole = null }) {
-    const [items, setItems] = useState([]);
-    const [progressMap, setProgressMap] = useState(new Map());
-    const [searchTerm, setSearchTerm] = useState("");
-    const [loading, setLoading] = useState(true);
-    const [expandedGroups, setExpandedGroups] = useState({});
+export function ItemsList({ project, onBack, currentRole = null, currentUserId = null }) {
+    const licitacionId = project?.id_licitacion;
+    const baseScreenKey = licitacionId ? buildStorageKey('screen_state', currentUserId || 'anon', licitacionId, 'items_list') : null;
+    const itemsCacheKey = licitacionId ? `items_${currentUserId || 'anon'}_${licitacionId}` : null;
+    const progressCacheKey = licitacionId ? `progress_${currentUserId || 'anon'}_${licitacionId}` : null;
+    const cachedItems = itemsCacheKey ? getCachedValue(itemsCacheKey) : null;
+    const cachedProgressEntries = progressCacheKey ? getCachedValue(progressCacheKey) : null;
+
+    const [items, setItems] = useState(() => cachedItems || []);
+    const [progressMap, setProgressMap] = useState(() => new Map(cachedProgressEntries || []));
+    const [searchTerm, setSearchTerm] = usePersistentState(baseScreenKey ? `${baseScreenKey}_search` : null, "");
+    const [loading, setLoading] = useState(() => !(cachedItems && cachedProgressEntries));
+    const [expandedGroups, setExpandedGroups] = usePersistentState(baseScreenKey ? `${baseScreenKey}_expanded_groups` : null, {});
 
     // Unified Flow: Just selecting item to see history/add
-    const [viewingHistoryItem, setViewingHistoryItem] = useState(null);
-    const [chartContext, setChartContext] = useState(null); // { title, subtitle, itemIds }
+    const [persistedHistoryItemId, setPersistedHistoryItemId] = usePersistentState(baseScreenKey ? `${baseScreenKey}_history_item` : null, null);
+    const [persistedChartContext, setPersistedChartContext] = usePersistentState(baseScreenKey ? `${baseScreenKey}_chart` : null, null);
+    const [viewingHistoryItem, setViewingHistoryItem] = useState(() => {
+        if (!persistedHistoryItemId || !cachedItems?.length) return null;
+        const matchingItem = cachedItems.find((entry) => String(entry.id) === String(persistedHistoryItemId));
+        return matchingItem ? {
+            ...matchingItem,
+            id_licitacion: matchingItem?.id_licitacion ?? licitacionId
+        } : null;
+    });
+    const [chartContext, setChartContext] = useState(() => persistedChartContext || null); // { title, subtitle, itemIds }
 
     const qtyByItemId = useMemo(() => {
         const map = {};
@@ -33,31 +52,45 @@ export function ItemsList({ project, onBack, currentRole = null }) {
     }, [items]);
 
     useEffect(() => {
-        if (project?.id_licitacion) {
-            setLoading(true);
+        if (!licitacionId) return;
 
-            Promise.all([
-                api.getItems(project.id_licitacion),
-                api.getActiveItemIds(project.id_licitacion)
-            ])
-                .then(([itemsData, progressData]) => {
-                    // Ensure every row carries the current project's licitacion id.
-                    // If it ever comes null/undefined from the view/table, progress inserts would fail.
-                    const normalizedItems = (itemsData || []).map((r) => ({
-                        ...r,
-                        id_licitacion: r?.id_licitacion ?? project.id_licitacion
-                    }));
+        if (cachedItems && cachedProgressEntries) return;
 
-                    setItems(normalizedItems);
-                    setProgressMap(progressData); // Now it's a Map
-                    setLoading(false);
-                })
-                .catch(err => {
-                    console.error(err);
-                    setLoading(false);
-                });
-        }
-    }, [project]);
+        Promise.all([
+            api.getItems(licitacionId),
+            api.getActiveItemIds(licitacionId)
+        ])
+            .then(([itemsData, progressData]) => {
+                const normalizedItems = (itemsData || []).map((r) => ({
+                    ...r,
+                    id_licitacion: r?.id_licitacion ?? licitacionId
+                }));
+
+                const serializedProgress = Array.from((progressData || new Map()).entries());
+                setItems(normalizedItems);
+                setProgressMap(progressData);
+                if (persistedHistoryItemId) {
+                    const matchingItem = normalizedItems.find((entry) => String(entry.id) === String(persistedHistoryItemId));
+                    if (matchingItem) {
+                        setViewingHistoryItem({
+                            ...matchingItem,
+                            id_licitacion: matchingItem?.id_licitacion ?? licitacionId
+                        });
+                    }
+                }
+                if (itemsCacheKey) setCachedValue(itemsCacheKey, normalizedItems);
+                if (progressCacheKey) setCachedValue(progressCacheKey, serializedProgress);
+                setLoading(false);
+            })
+            .catch(err => {
+                console.error(err);
+                setLoading(false);
+            });
+    }, [cachedItems, cachedProgressEntries, itemsCacheKey, licitacionId, persistedHistoryItemId, progressCacheKey]);
+
+    useEffect(() => {
+        setPersistedChartContext(chartContext || null);
+    }, [chartContext, setPersistedChartContext]);
 
     // Grouping Logic calculation
     const groupedData = useMemo(() => {
@@ -158,6 +191,7 @@ export function ItemsList({ project, onBack, currentRole = null }) {
 
     const handleItemClick = (item) => {
         // Unified Flow: Always open history first, which allows adding
+        setPersistedHistoryItemId(item.id);
         setViewingHistoryItem({
             ...item,
             id_licitacion: item?.id_licitacion ?? project?.id_licitacion
@@ -193,8 +227,13 @@ export function ItemsList({ project, onBack, currentRole = null }) {
     };
 
     const refreshProgress = () => {
-        if (project?.id_licitacion) {
-            api.getActiveItemIds(project.id_licitacion).then(progressData => setProgressMap(progressData));
+        if (licitacionId) {
+            api.getActiveItemIds(licitacionId).then(progressData => {
+                setProgressMap(progressData);
+                if (progressCacheKey) {
+                    setCachedValue(progressCacheKey, Array.from((progressData || new Map()).entries()));
+                }
+            });
         }
     };
 
@@ -333,7 +372,10 @@ export function ItemsList({ project, onBack, currentRole = null }) {
             {viewingHistoryItem && (
                 <HistoryModal
                     item={viewingHistoryItem}
-                    onClose={() => setViewingHistoryItem(null)}
+                    onClose={() => {
+                        setViewingHistoryItem(null);
+                        setPersistedHistoryItemId(null);
+                    }}
                     onUpdate={refreshProgress}
                     currentRole={currentRole}
                 />

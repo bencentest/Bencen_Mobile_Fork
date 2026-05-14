@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { supabase } from '../services/supabase';
 import { Loader2, LogIn } from 'lucide-react';
 
-export function Login({ onLoginSuccess }) {
+export function Login() {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
@@ -14,14 +14,12 @@ export function Login({ onLoginSuccess }) {
         setError(null);
 
         try {
-            const { data, error } = await supabase.auth.signInWithPassword({
+            const { error } = await supabase.auth.signInWithPassword({
                 email,
                 password,
             });
 
             if (error) throw error;
-            if (onLoginSuccess) onLoginSuccess(data.session);
-
         } catch (err) {
             setError(err.message);
         } finally {
