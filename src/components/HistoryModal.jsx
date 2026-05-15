@@ -386,12 +386,23 @@ export function HistoryModal({ item, onClose, onUpdate, currentRole = null }) {
                                 return null;
                             };
 
+                            const accumulatedQty = totalQty > 0 ? (totalQty * totalProgress / 100) : null;
+
                             return (
                                 <div className="pt-2 border-t border-gray-100">
-                                    <div className="flex items-baseline justify-between mb-4">
+                                    <div className="flex items-baseline justify-between mb-1">
                                         <span className="text-xs font-bold text-neutral-500 uppercase tracking-widest">Avance Total</span>
                                         <span className={`text-4xl font-black ${isComplete ? 'text-green-600' : 'text-neutral-900'}`}>
                                             {totalProgress.toFixed(2)}<span className="text-lg text-neutral-400 ml-1">%</span>
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center justify-between mb-3">
+                                        <span className="text-xs font-semibold text-neutral-400 uppercase tracking-widest">Avance acumulado</span>
+                                        <span className="text-sm font-bold text-neutral-700">
+                                            {accumulatedQty !== null
+                                                ? `${Number(accumulatedQty).toLocaleString('es-AR', { maximumFractionDigits: 2 })} ${unit} · ${totalProgress.toFixed(2)}%`
+                                                : `${totalProgress.toFixed(2)}%`
+                                            }
                                         </span>
                                     </div>
                                     {plannedWindow?.startDate && plannedWindow?.endDate && (
