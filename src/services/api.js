@@ -3,7 +3,6 @@ import { supabase, supabaseMobile } from './supabase';
 // Mobile roles/users live in `Usuarios_Auth`.
 // `Usuarios_Auth.role_mobile -> Usuarios_Roles.id`.
 const roleNameByIdCache = new Map();
-const roleIdByNameCache = new Map();
 
 async function getRoleNameById(roleId) {
     if (!roleId) return null;
@@ -20,26 +19,6 @@ async function getRoleNameById(roleId) {
     const roleName = data?.rol ? String(data.rol).toLowerCase() : null;
     roleNameByIdCache.set(key, roleName);
     return roleName;
-}
-
-async function getRoleIdByName(roleName) {
-    if (!roleName) return null;
-    const key = String(roleName).toLowerCase();
-    if (roleIdByNameCache.has(key)) return roleIdByNameCache.get(key);
-
-    // If there are duplicates across applications, prefer the latest id (common in this DB).
-    const { data, error } = await supabase
-        .from('Usuarios_Roles')
-        .select('id')
-        .eq('rol', key)
-        .order('id', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-    if (error) throw error;
-    const id = data?.id ?? null;
-    roleIdByNameCache.set(key, id);
-    return id;
 }
 
 async function getCurrentMobileRole() {
@@ -290,6 +269,7 @@ export const api = {
                 .from('Datos_Licitaciones')
                 .select('id_licitacion, nombre_abreviado')
                 .eq('obra_activa', true)
+                .not('obra_finalizada', 'is', true) // vigentes: activas y no finalizadas (null cuenta como no finalizada)
                 .order('nombre_abreviado', { ascending: true });
 
             // 4. Apply filters based on role
@@ -297,10 +277,12 @@ export const api = {
                 // Admins see all active projects
             } else {
                 // Engineers see only assigned projects
-                const { data: permissions } = await supabaseMobile
+                const { data: permissions, error: permissionsError } = await supabaseMobile
                     .from('reports_users_licitaciones')
                     .select('licitacion_id')
                     .eq('user_id', user.id);
+
+                if (permissionsError) throw permissionsError;
 
                 const allowedIds = permissions?.map(p => p.licitacion_id) || [];
 
@@ -319,30 +301,161 @@ export const api = {
         }
     },
 
-    // --- Role Management ---
-    getRoles: async () => {
-        try {
-            const { data, error } = await supabase.from('roles').select('*').order('name');
-            if (error) throw error;
-            return data;
-        } catch (error) {
-            console.error('Error fetching roles:', error);
-            return [];
-        }
-    },
+    // --- Admin Dashboard APIs ---
 
-    createRole: async (name, description) => {
+    // Portfolio home: one summary per active obra.
+    // - Real: sum(partes_diarios.avance) per item, capped at 100.
+    // - Plan a hoy: sum(Datos_Licitaciones_Avances.avance_estimado) (fraction per period) for elapsed periods;
+    //   the current period counts proportionally to elapsed days.
+    // Both are returned weighted by cost (PU x cantidad) and by item count.
+    getPortfolioOverview: async () => {
         try {
-            const { data, error } = await supabase.from('roles').insert([{ name, description }]).select();
-            if (error) throw error;
-            return data;
+            const projects = await api.getLicitaciones();
+            if (!projects || projects.length === 0) return { projects: [], generatedAt: new Date().toISOString() };
+
+            const licIds = projects.map(p => p.id_licitacion);
+            const pageSize = 1000;
+            const fetchAll = async (buildQuery) => {
+                const rows = [];
+                for (let from = 0; ; from += pageSize) {
+                    const { data, error } = await buildQuery().range(from, from + pageSize - 1);
+                    if (error) throw error;
+                    rows.push(...(data || []));
+                    if (!data || data.length < pageSize) return rows;
+                }
+            };
+
+            const [planRows, parts, periods, estRows] = await Promise.all([
+                fetchAll(() => supabase
+                    .from('Datos_Licitaciones_Plan_Trabajo')
+                    .select('id, id_licitacion, grupo, subgrupo, cantidad, pu_mod_mo, pu_mod_mat, pu_mod_eq')
+                    .in('id_licitacion', licIds)
+                    .order('id', { ascending: true })),
+                fetchAll(() => supabaseMobile
+                    .from('partes_diarios')
+                    .select('id, item_id, id_licitacion, avance, created_at, user_id')
+                    .in('id_licitacion', licIds)
+                    .order('id', { ascending: true })),
+                fetchAll(() => supabase
+                    .from('Datos_Licitaciones_Periodos')
+                    .select('id, id_licitacion, fecha_desde, fecha_hasta')
+                    .in('id_licitacion', licIds)
+                    .order('id', { ascending: true })),
+                fetchAll(() => supabase
+                    .from('Datos_Licitaciones_Avances')
+                    .select('id_licitacion, id_item, id_periodo, avance_estimado')
+                    .in('id_licitacion', licIds)
+                    .gt('avance_estimado', 0)
+                    .order('id_item', { ascending: true })
+                    .order('id_periodo', { ascending: true }))
+            ]);
+
+            const dayMs = 24 * 60 * 60 * 1000;
+            const now = new Date();
+            const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+            const parseDay = (iso) => {
+                const s = String(iso || '').slice(0, 10);
+                if (!s) return null;
+                const [y, m, d] = s.split('-').map(Number);
+                return new Date(y, m - 1, d).getTime();
+            };
+
+            // Elapsed fraction per period (0..1) and plan window bounds.
+            const periodInfo = new Map();
+            periods.forEach(p => {
+                const start = parseDay(p.fecha_desde || p.fecha_hasta);
+                const end = parseDay(p.fecha_hasta || p.fecha_desde);
+                if (start === null || end === null) return;
+                let elapsed = 0;
+                if (todayStart >= end) elapsed = 1;
+                else if (todayStart >= start) elapsed = (todayStart - start + dayMs) / (end - start + dayMs);
+                periodInfo.set(String(p.id), { start, end, elapsed });
+            });
+
+            const items = new Map(); // itemId -> { licId, cost, real, plan }
+            planRows.forEach(r => {
+                if (r.grupo || r.subgrupo) return;
+                const unitPrice = (Number(r.pu_mod_mo) || 0) + (Number(r.pu_mod_mat) || 0) + (Number(r.pu_mod_eq) || 0);
+                items.set(String(r.id), { licId: r.id_licitacion, cost: unitPrice * (Number(r.cantidad) || 0), real: 0, plan: 0 });
+            });
+
+            const planWindow = new Map(); // licId -> { start, end }
+            estRows.forEach(r => {
+                const item = items.get(String(r.id_item));
+                const period = periodInfo.get(String(r.id_periodo));
+                if (!item || !period) return;
+                item.plan += (Number(r.avance_estimado) || 0) * 100 * period.elapsed;
+                const w = planWindow.get(r.id_licitacion) || { start: period.start, end: period.end };
+                w.start = Math.min(w.start, period.start);
+                w.end = Math.max(w.end, period.end);
+                planWindow.set(r.id_licitacion, w);
+            });
+
+            const activityDays = 14;
+            const firstActivityDay = todayStart - (activityDays - 1) * dayMs;
+            const reportStats = new Map(); // licId -> { last, count7d, activity[] }
+            const statsFor = (licId) => {
+                if (!reportStats.has(licId)) reportStats.set(licId, { last: null, count7d: 0, activity: Array(activityDays).fill(0) });
+                return reportStats.get(licId);
+            };
+
+            parts.forEach(p => {
+                const item = items.get(String(p.item_id));
+                if (item) item.real += Number(p.avance) || 0;
+
+                const stats = statsFor(p.id_licitacion || item?.licId);
+                const created = p.created_at ? new Date(p.created_at) : null;
+                if (!created || Number.isNaN(created.getTime())) return;
+                if (!stats.last || created > new Date(stats.last.created_at)) stats.last = p;
+                const createdDay = new Date(created.getFullYear(), created.getMonth(), created.getDate()).getTime();
+                const idx = Math.round((createdDay - firstActivityDay) / dayMs);
+                if (idx >= 0 && idx < activityDays) {
+                    stats.activity[idx] += 1;
+                    if (idx >= activityDays - 7) stats.count7d += 1;
+                }
+            });
+
+            const lastReports = await attachReporterProfiles([...reportStats.values()].map(s => s.last).filter(Boolean));
+            const reporterByPartId = new Map(lastReports.map(r => [String(r.id), r.reporter]));
+
+            const summaries = projects.map(project => {
+                const licId = project.id_licitacion;
+                const projectItems = [...items.values()].filter(i => i.licId === licId);
+                const totalCost = projectItems.reduce((sum, i) => sum + i.cost, 0);
+
+                const weighted = (weightOf) => {
+                    const totalWeight = projectItems.reduce((sum, i) => sum + weightOf(i), 0);
+                    if (totalWeight <= 0) return { real: 0, plan: 0 };
+                    const avg = (key) => projectItems.reduce((sum, i) => sum + weightOf(i) * Math.min(100, i[key]), 0) / totalWeight;
+                    return { real: avg('real'), plan: avg('plan') };
+                };
+
+                const stats = reportStats.get(licId) || { last: null, count7d: 0, activity: Array(activityDays).fill(0) };
+                const planWin = planWindow.get(licId) || null;
+
+                return {
+                    id_licitacion: licId,
+                    nombre_abreviado: project.nombre_abreviado,
+                    itemCount: projectItems.length,
+                    hasCosts: totalCost > 0,
+                    hasPlan: Boolean(planWin),
+                    byCost: weighted(i => i.cost),
+                    byItems: weighted(() => 1),
+                    planStart: planWin ? new Date(planWin.start).toISOString().slice(0, 10) : null,
+                    planEnd: planWin ? new Date(planWin.end).toISOString().slice(0, 10) : null,
+                    lastReportAt: stats.last?.created_at || null,
+                    lastReporter: stats.last ? (reporterByPartId.get(String(stats.last.id)) || null) : null,
+                    reports7d: stats.count7d,
+                    activity: stats.activity
+                };
+            });
+
+            return { projects: summaries, generatedAt: now.toISOString() };
         } catch (error) {
-            console.error('Error creating role:', error);
+            console.error('Error fetching portfolio overview:', error);
             throw error;
         }
     },
-
-    // --- Admin Dashboard APIs ---
 
 
     getRecentActivity: async (limit = 20) => {
@@ -410,215 +523,6 @@ export const api = {
         } catch (error) {
             console.error('Error fetching recent activity:', error);
             return [];
-        }
-    },
-
-    getDashboardMetrics: async (licitacionId = null) => {
-        try {
-            const todayISO = new Date().toISOString().split('T')[0] + 'T00:00:00.000Z';
-
-            // Base queries
-            let projectsQuery = supabase.from('Datos_Licitaciones').select('id_licitacion', { count: 'exact', head: true }).eq('obra_activa', true);
-            let engineersQuery = (async () => {
-                const engineerRoleId = await getRoleIdByName('engineer');
-                if (engineerRoleId) {
-                    return supabase.from('Usuarios_Auth').select('id', { count: 'exact', head: true }).eq('role_mobile', engineerRoleId);
-                }
-                return supabase.from('Usuarios_Auth').select('id', { count: 'exact', head: true }).eq('role_mobile', -1);
-            })();
-            let reportsQuery = supabaseMobile.from('partes_diarios').select('id', { count: 'exact', head: true }).gte('created_at', todayISO);
-
-            // Apply filters
-            if (licitacionId) {
-                projectsQuery = projectsQuery.eq('id_licitacion', licitacionId);
-                // For engineers, we check permissions (approximated by checking distinct users assigned)
-                // Count assigned users in this licitacion (1 row per user due to unique constraint)
-                engineersQuery = supabaseMobile.from('reports_users_licitaciones').select('user_id', { count: 'exact', head: true }).eq('licitacion_id', licitacionId);
-                reportsQuery = reportsQuery.eq('id_licitacion', licitacionId);
-            }
-
-            // Execute
-            const resolvedEngineersQuery = await engineersQuery;
-            const [projectsRes, engineersRes, reportsRes] = await Promise.all([projectsQuery, resolvedEngineersQuery, reportsQuery]);
-
-            // Calculate Items Metrics (Total / Completed)
-            let totalItems = 0;
-            let completedItems = 0;
-
-            if (licitacionId) {
-                // 1. Total Items
-                const { count: tCount } = await supabase
-                    .from('Datos_Licitaciones_Plan_Trabajo')
-                    .select('id', { count: 'exact', head: true })
-                    .eq('id_licitacion', licitacionId);
-                totalItems = tCount || 0;
-
-                // 2. Completed Items (Calculated from Advances)
-                const { data: advances } = await supabase
-                    .from('Datos_Licitaciones_Avances')
-                    .select('id_item, avance_real')
-                    .eq('id_licitacion', licitacionId);
-
-                if (advances) {
-                    const progressMap = {};
-                    advances.forEach(a => {
-                        progressMap[a.id_item] = (progressMap[a.id_item] || 0) + (a.avance_real || 0);
-                    });
-                    completedItems = Object.values(progressMap).filter(p => p >= 0.99).length;
-                }
-            }
-
-            return {
-                activeProjects: projectsRes.count || 0,
-                activeEngineers: engineersRes.count || 0,
-                reportsToday: reportsRes.count || 0,
-                totalItems: totalItems,
-                completedItems: completedItems
-            };
-        } catch (error) {
-            console.error('Error fetching metrics:', error);
-            return { activeProjects: 0, activeEngineers: 0, reportsToday: 0, totalItems: 0, completedItems: 0 };
-        }
-    },
-
-    getWeeklyActivity: async (licitacionId = null, startDate, endDate) => {
-        try {
-            // Defaults: Last 15 Days if not provided
-            let start = startDate;
-            let end = endDate;
-
-            if (!start || !end) {
-                const now = new Date();
-                const past = new Date();
-                past.setDate(now.getDate() - 15);
-                start = past.toISOString().split('T')[0];
-                end = now.toISOString().split('T')[0];
-            }
-
-            // 1. Fetch Parts in Range (Using FECHA_FIN as requested)
-            let query = supabaseMobile
-                .from('partes_diarios')
-                .select(`
-                    id, avance, fecha, fecha_fin, created_at, item_id, id_licitacion
-                `)
-                .gte('fecha', start)
-                .lte('fecha', end)
-                .order('fecha', { ascending: true });
-
-            if (licitacionId) {
-                query = query.eq('id_licitacion', licitacionId);
-            }
-
-            const { data: parts, error } = await query;
-
-            if (error) throw error;
-            if (!parts || parts.length === 0) return [];
-
-            // Check User Role for Financial Data
-            const role = await getCurrentMobileRole();
-            const isAdmin = role === 'admin' || role === 'admin_gerencia';
-
-            let itemToCostMap = new Map();
-
-            if (isAdmin) {
-                // 2. Fetch Cost Data (Hybrid Strategy)
-                const itemIds = [...new Set(parts.map(p => p.item_id))];
-
-                // A. Direct Match
-                const { data: publicItems } = await supabase
-                    .from('Datos_Licitaciones_Plan_Trabajo')
-                    .select('id, item, pu_mod_mo, pu_mod_mat, pu_mod_eq, cantidad, id_licitacion')
-                    .in('id', itemIds);
-
-                publicItems?.forEach(i => {
-                    const totalCost = (i.pu_mod_mo || 0) + (i.pu_mod_mat || 0) + (i.pu_mod_eq || 0);
-                    itemToCostMap.set(String(i.id), { price: totalCost, qty: i.cantidad });
-                });
-
-                // Note: we no longer resolve missing item ids via Finnegans.
-            }
-
-            // 3. Aggregate by Date
-            const grouped = {};
-            parts.forEach(part => {
-                const dateKey = part.fecha_fin || part.fecha;
-                if (!grouped[dateKey]) grouped[dateKey] = { date: dateKey, parts: 0, money: 0 };
-
-                grouped[dateKey].parts += 1;
-
-                if (isAdmin) {
-                    const costData = itemToCostMap.get(String(part.item_id));
-                    if (costData) {
-                        const executedMoney = (costData.price * costData.qty) * (part.avance / 100);
-                        grouped[dateKey].money += executedMoney;
-                    }
-                }
-            });
-
-            return Object.values(grouped).sort((a, b) => new Date(a.date) - new Date(b.date));
-
-        } catch (error) {
-            console.error('Error fetching weekly activity:', error);
-            return [];
-        }
-    },
-
-    getProjectFinancials: async (licitacionId) => {
-        try {
-            if (!licitacionId) return { totalScope: 0, totalExecuted: 0 };
-
-            // 1. Check Admin
-            const role = await getCurrentMobileRole();
-            if (role !== 'admin' && role !== 'admin_gerencia') return { totalScope: 0, totalExecuted: 0 };
-
-            // 2. Fetch Project Definition (Total Scope)
-            const { data: projectItems, error: itemsErr } = await supabase
-                .from('Datos_Licitaciones_Plan_Trabajo')
-                .select('id, item, cantidad, pu_mod_mo, pu_mod_mat, pu_mod_eq')
-                .eq('id_licitacion', licitacionId);
-
-            if (itemsErr) throw itemsErr;
-
-            let totalScope = 0;
-            const costMapById = new Map();       // ID -> Cost
-            const costMapByItemCode = new Map(); // Code -> Cost
-
-            projectItems?.forEach(ex => {
-                const unitPrice = (Number(ex.pu_mod_mo) || 0) + (Number(ex.pu_mod_mat) || 0) + (Number(ex.pu_mod_eq) || 0);
-                const total = unitPrice * (Number(ex.cantidad) || 0);
-                totalScope += total;
-
-                costMapById.set(String(ex.id), ex);
-                costMapByItemCode.set(ex.item, ex);
-            });
-
-            // 3. Fetch Execution (Parts)
-            const { data: parts, error: partsErr } = await supabaseMobile
-                .from('partes_diarios')
-                .select('item_id, avance')
-                .eq('id_licitacion', licitacionId);
-
-            if (partsErr) throw partsErr;
-
-            // 4. Calculate Total Executed
-            let totalExecuted = 0;
-
-            parts.forEach(part => {
-                // Try Direct
-                let cost = costMapById.get(String(part.item_id));
-
-                if (cost) {
-                    const unitPrice = (Number(cost.pu_mod_mo) || 0) + (Number(cost.pu_mod_mat) || 0) + (Number(cost.pu_mod_eq) || 0);
-                    const totalItemScope = unitPrice * (Number(cost.cantidad) || 0);
-                    const executedVal = totalItemScope * ((part.avance || 0) / 100);
-                    totalExecuted += executedVal;
-                }
-            });
-
-            return { totalScope, totalExecuted };
-        } catch (e) {
-            console.error("Error getting project financials:", e);
-            return { totalScope: 0, totalExecuted: 0 };
         }
     },
 
@@ -816,7 +720,7 @@ export const api = {
             };
 
             const { data: periods, error: periodsErr } = await supabase
-                .from('datos_licitaciones_periodos')
+                .from('Datos_Licitaciones_Periodos')
                 .select('id, orden, periodo, fecha_desde, fecha_hasta')
                 .eq('id_licitacion', licitacionId)
                 .order('orden', { ascending: true })
@@ -1002,7 +906,7 @@ export const api = {
             if (!minPeriodId || !maxPeriodId) return null;
 
             const { data: periods, error: periodsErr } = await supabase
-                .from('datos_licitaciones_periodos')
+                .from('Datos_Licitaciones_Periodos')
                 .select('id, fecha_desde, fecha_hasta')
                 .eq('id_licitacion', licitacionId)
                 .in('id', [minPeriodId, maxPeriodId]);
@@ -1033,7 +937,7 @@ export const api = {
             if (dateList.length === 0) return {};
 
             const { data: periods, error: pErr } = await supabase
-                .from('datos_licitaciones_periodos')
+                .from('Datos_Licitaciones_Periodos')
                 .select('id, orden, fecha_desde, fecha_hasta')
                 .eq('id_licitacion', licitacionId)
                 .order('orden', { ascending: true })
@@ -1106,7 +1010,7 @@ export const api = {
     ,
 
     // Planned window for the selected items: first/last period where avance_estimado > 0.
-    // Returns { startDate, endDate } from datos_licitaciones_periodos.
+    // Returns { startDate, endDate } from Datos_Licitaciones_Periodos.
     getPlannedWindowByEstimado: async ({ licitacionId, itemIds }) => {
         try {
             if (!licitacionId) return null;
@@ -1157,7 +1061,7 @@ export const api = {
             if (minPid === null || maxPid === null) return null;
 
             const { data: periods, error: pErr } = await supabase
-                .from('datos_licitaciones_periodos')
+                .from('Datos_Licitaciones_Periodos')
                 .select('id, fecha_desde, fecha_hasta')
                 .eq('id_licitacion', licitacionId)
                 .in('id', [minPid, maxPid]);
@@ -1178,7 +1082,7 @@ export const api = {
     },
 
     // Monthly plan (estimado) vs real (partes_diarios) per item.
-    // - Columns are months derived from datos_licitaciones_periodos (grouped by YYYY-MM based on fecha_hasta/fecha_desde).
+    // - Columns are months derived from Datos_Licitaciones_Periodos (grouped by YYYY-MM based on fecha_hasta/fecha_desde).
     // - Real is aggregated from partes_diarios by month using fecha_fin (or fecha fallback). (Option 1: assign the whole carga to its end month.)
     // Returns: { months: [{ key, label, start, end }], estByItemId: { [id]: { [monthKey]: pctPoints } }, realByItemId: { [id]: { [monthKey]: pctPoints } } }
     getMonthlyPlanVsReal: async ({ licitacionId, itemIds }) => {
@@ -1193,7 +1097,7 @@ export const api = {
             };
 
             const { data: periods, error: pErr } = await supabase
-                .from('datos_licitaciones_periodos')
+                .from('Datos_Licitaciones_Periodos')
                 .select('id, orden, periodo, fecha_desde, fecha_hasta')
                 .eq('id_licitacion', licitacionId)
                 .order('orden', { ascending: true })

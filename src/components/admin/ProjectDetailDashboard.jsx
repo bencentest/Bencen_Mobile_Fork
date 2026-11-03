@@ -614,17 +614,27 @@ export function ProjectDetailDashboard({ projectId, onBack, currentRole = null }
     const [historyDirty, setHistoryDirty] = useState(false);
     const [chartContext, setChartContext] = useState(null); // { title, subtitle, itemIds }
 
-    const loadData = () => {
-        setLoading(true);
-        api.getProjectDetails(projectId).then(data => {
-            setDetails(data);
-            setLoading(false);
-        });
-    };
+    const [reloadKey, setReloadKey] = useState(0);
+    const loadData = () => setReloadKey(k => k + 1);
 
     useEffect(() => {
-        loadData();
-    }, [projectId]);
+        let cancelled = false;
+
+        async function load() {
+            setLoading(true);
+            try {
+                const data = await api.getProjectDetails(projectId);
+                if (!cancelled) setDetails(data);
+            } catch (e) {
+                console.error(e);
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        }
+
+        load();
+        return () => { cancelled = true; };
+    }, [projectId, reloadKey]);
 
     useEffect(() => {
         try {
@@ -1361,6 +1371,13 @@ function PlanningGanttView({
             return 'pct';
         }
     }); // pct | qty
+    const [ignoreDatesMode, setIgnoreDatesMode] = useState(() => {
+        try {
+            return localStorage.getItem(`${viewPersistKey}_ignore_dates`) === '1';
+        } catch {
+            return false;
+        }
+    });
     const [loading, setLoading] = useState(true);
     const [months, setMonths] = useState([]); // [{key,label,start,end}]
     const [estByItemId, setEstByItemId] = useState({});
@@ -1393,6 +1410,10 @@ function PlanningGanttView({
     useEffect(() => {
         try { localStorage.setItem(`${viewPersistKey}_value`, String(valueMode || 'pct')); } catch { void 0; }
     }, [viewPersistKey, valueMode]);
+
+    useEffect(() => {
+        try { localStorage.setItem(`${viewPersistKey}_ignore_dates`, ignoreDatesMode ? '1' : '0'); } catch { void 0; }
+    }, [viewPersistKey, ignoreDatesMode]);
 
     const allGroupIds = useMemo(() => (tree || []).map(g => g?.id).filter(Boolean), [tree]);
     const allSubgroupIds = useMemo(() => (tree || []).flatMap(g => (g?.subgroups || []).map(s => s?.id)).filter(Boolean), [tree]);
@@ -1458,13 +1479,48 @@ function PlanningGanttView({
     const plannedStartKey = useMemo(() => monthKeyOfIso(plannedWindow?.startDate), [plannedWindow?.startDate]);
     const plannedEndKey = useMemo(() => monthKeyOfIso(plannedWindow?.endDate), [plannedWindow?.endDate]);
 
+    const comparisonRealByItemId = useMemo(() => {
+        if (!ignoreDatesMode) return realByItemId || {};
+
+        const monthKeys = (months || []).map(m => m?.key).filter(Boolean);
+        const out = {};
+
+        itemIds.forEach((id) => {
+            const itemId = String(id);
+            const realMap = realByItemId?.[itemId] || {};
+            const estMap = estByItemId?.[itemId] || {};
+            const totalReal = Object.values(realMap).reduce((sum, value) => sum + (Number(value) || 0), 0);
+
+            out[itemId] = {};
+            if (totalReal <= 0) return;
+
+            const plannedKeys = monthKeys.filter(key => Number(estMap?.[key]) > 0);
+            if (plannedKeys.length === 0) {
+                out[itemId] = { ...realMap };
+                return;
+            }
+
+            let remaining = totalReal;
+            plannedKeys.forEach((key, idx) => {
+                if (remaining <= 0) return;
+                const isLast = idx === plannedKeys.length - 1;
+                const capacity = Math.max(0, Number(estMap?.[key]) || 0);
+                const value = isLast ? remaining : Math.min(remaining, capacity);
+                if (value > 0) out[itemId][key] = value;
+                remaining -= value;
+            });
+        });
+
+        return out;
+    }, [ignoreDatesMode, realByItemId, estByItemId, months, itemIds]);
+
     const lastRealKey = useMemo(() => {
         const keys = new Set();
-        Object.values(realByItemId || {}).forEach(map => {
+        Object.values(comparisonRealByItemId || {}).forEach(map => {
             Object.keys(map || {}).forEach(k => keys.add(k));
         });
         return Array.from(keys).sort().pop() || null;
-    }, [realByItemId]);
+    }, [comparisonRealByItemId]);
 
     const monthsToRender = useMemo(() => {
         const all = months || [];
@@ -1483,6 +1539,25 @@ function PlanningGanttView({
         if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return all;
         return all.slice(startIdx, endIdx + 1);
     }, [months, plannedStartKey, plannedEndKey, lastRealKey, zoomMode]);
+
+    const delayedMonthCount = useMemo(() => {
+        if (ignoreDatesMode) return 0;
+        if (!plannedEndKey) return 0;
+        const keys = new Set();
+        Object.values(realByItemId || {}).forEach(map => {
+            Object.entries(map || {}).forEach(([key, value]) => {
+                if (key > plannedEndKey && Number(value) > 0) keys.add(key);
+            });
+        });
+        return keys.size;
+    }, [ignoreDatesMode, realByItemId, plannedEndKey]);
+
+    const isOutsidePlanMonth = (monthKey) => {
+        if (!monthKey) return false;
+        if (plannedStartKey && monthKey < plannedStartKey) return true;
+        if (plannedEndKey && monthKey > plannedEndKey) return true;
+        return false;
+    };
 
     const renderRows = useMemo(() => {
         if (!tree || tree.length === 0) return [];
@@ -1654,6 +1729,14 @@ function PlanningGanttView({
                     >
                         Hasta carga
                     </button>
+                    <button
+                        type="button"
+                        onClick={() => setIgnoreDatesMode(prev => !prev)}
+                        className={`h-10 px-3 rounded-lg border text-xs font-bold ${ignoreDatesMode ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-neutral-700 border-gray-200 hover:border-emerald-300 hover:text-emerald-700'}`}
+                        title="Redistribuye el avance real sobre los meses planificados de cada item"
+                    >
+                        Omitir fechas
+                    </button>
 
                     <div className="ml-auto flex items-center gap-2">
                         <div className="text-[11px] font-bold text-neutral-400 uppercase tracking-widest hidden md:block">
@@ -1687,6 +1770,16 @@ function PlanningGanttView({
                         <span className="font-semibold text-neutral-700">
                             {fmtMonthLabel(monthKeyOfIso(plannedWindow.startDate))} - {fmtMonthLabel(monthKeyOfIso(plannedWindow.endDate))}
                         </span>
+                        {delayedMonthCount > 0 && (
+                            <span className="ml-3 inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 font-bold text-red-700 border border-red-100">
+                                {delayedMonthCount} mes{delayedMonthCount === 1 ? '' : 'es'} con carga fuera de plan
+                            </span>
+                        )}
+                        {ignoreDatesMode && (
+                            <span className="ml-3 inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 font-bold text-emerald-700 border border-emerald-100">
+                                Fechas omitidas: real redistribuido por secuencia planificada
+                            </span>
+                        )}
                     </div>
                 )}
             </div>
@@ -1716,11 +1809,19 @@ function PlanningGanttView({
                                     Ítems
                                 </div>
                                 <div className="flex-1 flex">
-                                    {monthsToRender.map((m) => (
-                                        <div key={m.key} className="w-[92px] shrink-0 px-2 py-2 text-[11px] font-bold text-neutral-500 text-center border-l border-gray-100">
-                                            {fmtMonthLabel(m.key)}
-                                        </div>
-                                    ))}
+                                    {monthsToRender.map((m) => {
+                                        const outsidePlan = isOutsidePlanMonth(m.key);
+                                        return (
+                                            <div
+                                                key={m.key}
+                                                className={`w-[92px] shrink-0 px-2 py-2 text-[11px] font-bold text-center border-l ${outsidePlan ? 'bg-red-50/70 text-red-700 border-red-100' : 'text-neutral-500 border-gray-100'}`}
+                                                title={outsidePlan ? 'Mes fuera del periodo estimado' : undefined}
+                                            >
+                                                <div>{fmtMonthLabel(m.key)}</div>
+                                                {outsidePlan && <div className="mt-0.5 text-[9px] uppercase tracking-wide">Fuera plan</div>}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             </div>
                         </div>
@@ -1792,7 +1893,7 @@ function PlanningGanttView({
                                 ? (isItem ? cumPctUpTo(estByItemId, rowId, endKey) : aggCumPctUpTo(estByItemId, rowItemIds, endKey))
                                 : 0;
                             const endRealCum = endKey
-                                ? (isItem ? cumPctUpTo(realByItemId, rowId, endKey) : aggCumPctUpTo(realByItemId, rowItemIds, endKey))
+                                ? (isItem ? cumPctUpTo(comparisonRealByItemId, rowId, endKey) : aggCumPctUpTo(comparisonRealByItemId, rowItemIds, endKey))
                                 : 0;
                             const endDiffCum = endRealCum - endEstCum;
 
@@ -1808,7 +1909,7 @@ function PlanningGanttView({
                                 ? rowItemIds.reduce((sum, id) => {
                                     const meta = itemById.get(String(id)) || {};
                                     const q = Number(meta?.cantidad) || 0;
-                                    return sum + (q * cumPctUpTo(realByItemId, id, endKey) / 100);
+                                    return sum + (q * cumPctUpTo(comparisonRealByItemId, id, endKey) / 100);
                                 }, 0)
                                 : null;
 
@@ -1866,7 +1967,7 @@ function PlanningGanttView({
                                                     const endKey = zoomMode === 'toReal' ? (lastRealKey || plannedEndKey) : plannedEndKey;
                                                     if (!endKey) return null;
                                                     const estCum = cumPctUpTo(estByItemId, rowId, endKey);
-                                                    const realCum = cumPctUpTo(realByItemId, rowId, endKey);
+                                                    const realCum = cumPctUpTo(comparisonRealByItemId, rowId, endKey);
                                                     if ((estCum || 0) === 0 && (realCum || 0) === 0) return null;
                                                     const diff = realCum - estCum;
 
@@ -1903,10 +2004,12 @@ function PlanningGanttView({
                                     <div className="flex-1 flex">
                                         {monthsToRender.map((m) => {
                                             const est = isItem ? getPct(estByItemId, rowId, m.key) : aggPctForMonth(estByItemId, rowItemIds, m.key);
-                                            const real = isItem ? getPct(realByItemId, rowId, m.key) : aggPctForMonth(realByItemId, rowItemIds, m.key);
+                                            const real = isItem ? getPct(comparisonRealByItemId, rowId, m.key) : aggPctForMonth(comparisonRealByItemId, rowItemIds, m.key);
                                             const diff = real - est;
+                                            const outsidePlan = isOutsidePlanMonth(m.key);
+                                            const delayedReal = !ignoreDatesMode && outsidePlan && real > 0;
                                             const estCum = isItem ? cumPctUpTo(estByItemId, rowId, m.key) : aggCumPctUpTo(estByItemId, rowItemIds, m.key);
-                                            const realCum = isItem ? cumPctUpTo(realByItemId, rowId, m.key) : aggCumPctUpTo(realByItemId, rowItemIds, m.key);
+                                            const realCum = isItem ? cumPctUpTo(comparisonRealByItemId, rowId, m.key) : aggCumPctUpTo(comparisonRealByItemId, rowItemIds, m.key);
 
                                             const itemMeta = isItem ? (itemById.get(String(rowId)) || {}) : null;
                                             const totalQty = isItem ? (Number(itemMeta?.cantidad) || 0) : 0;
@@ -1928,7 +2031,7 @@ function PlanningGanttView({
                                                 ? rowItemIds.reduce((sum, id) => {
                                                     const meta = itemById.get(String(id)) || {};
                                                     const q = Number(meta?.cantidad) || 0;
-                                                    return sum + (q * getPct(realByItemId, id, m.key) / 100);
+                                                    return sum + (q * getPct(comparisonRealByItemId, id, m.key) / 100);
                                                 }, 0)
                                                 : null;
 
@@ -1944,7 +2047,7 @@ function PlanningGanttView({
                                                 ? rowItemIds.reduce((sum, id) => {
                                                     const meta = itemById.get(String(id)) || {};
                                                     const q = Number(meta?.cantidad) || 0;
-                                                    return sum + (q * cumPctUpTo(realByItemId, id, m.key) / 100);
+                                                    return sum + (q * cumPctUpTo(comparisonRealByItemId, id, m.key) / 100);
                                                 }, 0)
                                                 : null;
 
@@ -1953,7 +2056,7 @@ function PlanningGanttView({
                                             return (
                                                 <div
                                                     key={`${row.type}-${rowId}-${m.key}`}
-                                                    className="w-[92px] shrink-0 border-l border-gray-100 px-2 py-2"
+                                                    className={`w-[92px] shrink-0 border-l px-2 py-2 ${outsidePlan ? 'bg-red-50/30 border-red-100' : 'border-gray-100'} ${delayedReal ? 'ring-1 ring-inset ring-red-200' : ''}`}
                                                     onMouseLeave={hideTooltip}
                                                 >
                                                     <div
@@ -1975,6 +2078,8 @@ function PlanningGanttView({
                                                                 ? `Real acum: ${fmtQty(rowRealCumQty)} ${rowQtyCtx.unit} (${realCum.toFixed(2)}%)`
                                                                 : `Real acum: ${realCum.toFixed(2)}%${realCumQty !== null ? ` (${realCumQty.toLocaleString('es-AR')} ${unit})` : ''}`,
                                                             `Δ acum: ${(realCum - estCum) >= 0 ? '+' : ''}${(realCum - estCum).toFixed(2)} pp`,
+                                                            ignoreDatesMode ? 'Fechas omitidas: real redistribuido por plan.' : null,
+                                                            delayedReal ? 'Carga real fuera del periodo estimado.' : null,
                                                             valueMode === 'qty' && !rowQtyCtx.canQty ? 'Cantidad no disponible (unidades mixtas o falta cantidad).' : null
                                                         ].filter(Boolean))}
                                                     >
@@ -1986,9 +2091,9 @@ function PlanningGanttView({
                                                             />
                                                         </div>
                                                         {/* Real (abajo) */}
-                                                        <div className={`${cellHeightClass} w-full rounded-md bg-green-50 relative overflow-hidden ${real > est ? 'ring-1 ring-green-500/40' : ''}`}>
+                                                        <div className={`${cellHeightClass} w-full rounded-md relative overflow-hidden ${delayedReal ? 'bg-red-100 ring-1 ring-red-400/60' : `bg-green-50 ${real > est ? 'ring-1 ring-green-500/40' : ''}`}`}>
                                                             <div
-                                                                className="absolute inset-y-0 left-0 bg-green-500"
+                                                                className={`absolute inset-y-0 left-0 ${delayedReal ? 'bg-red-500' : 'bg-green-500'}`}
                                                                 style={{ width: `${Math.min(100, Math.max(0, real))}%` }}
                                                             />
                                                         </div>
@@ -1996,7 +2101,7 @@ function PlanningGanttView({
 
                                                     {(est > 0 || real > 0) && (
                                                         <div className="mt-1 text-[10px] leading-none flex items-center justify-between gap-1">
-                                                            <span className="font-bold text-green-700 truncate">
+                                                            <span className={`font-bold truncate ${delayedReal ? 'text-red-700' : 'text-green-700'}`}>
                                                                 {valueMode === 'qty' && rowQtyCtx.canQty ? `R ${fmtQty(rowRealQty)} ${rowQtyCtx.unit}` : `R ${real.toFixed(0)}%`}
                                                             </span>
                                                             <span className="text-neutral-300">/</span>

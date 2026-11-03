@@ -7,22 +7,31 @@ export function ProjectSelector({ onSelect, currentUserId }) {
     const cacheKey = currentUserId ? `projects_${currentUserId}` : null;
     const [projects, setProjects] = useState(() => (cacheKey ? (getCachedValue(cacheKey) || []) : []));
     const [loading, setLoading] = useState(() => !cacheKey || !getCachedValue(cacheKey));
+    const [error, setError] = useState(null);
 
+    // Show the cached list right away but always revalidate: assignments change from the admin side.
     useEffect(() => {
-        if (cacheKey && getCachedValue(cacheKey)) return;
+        let cancelled = false;
 
-        api.getLicitaciones()
-            .then(data => {
+        async function load() {
+            try {
+                const data = await api.getLicitaciones();
+                if (cancelled) return;
                 setProjects(data);
+                setError(null);
                 if (cacheKey) {
                     setCachedValue(cacheKey, data);
                 }
-                setLoading(false);
-            })
-            .catch(err => {
+            } catch (err) {
                 console.error(err);
-                setLoading(false);
-            });
+                if (!cancelled) setError(err?.message || 'No se pudieron cargar las obras.');
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        }
+
+        load();
+        return () => { cancelled = true; };
     }, [cacheKey]);
 
     if (loading) {
@@ -77,7 +86,13 @@ export function ProjectSelector({ onSelect, currentUserId }) {
                 ))}
             </div>
 
-            {projects.length === 0 && (
+            {error && (
+                <div className="bg-red-50 text-red-700 text-sm p-4 rounded-2xl border border-red-100">
+                    Error al cargar obras: {error}
+                </div>
+            )}
+
+            {!error && projects.length === 0 && (
                 <div className="text-center py-10 bg-white rounded-2xl border border-dashed border-gray-200">
                     <p className="text-neutral-400 text-sm">No tenés obras asignadas.</p>
                 </div>

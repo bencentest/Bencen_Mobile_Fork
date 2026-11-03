@@ -48,6 +48,9 @@ Used fields:
 - `id_licitacion`
 - `nombre_abreviado`
 - `obra_activa`
+- `obra_finalizada` (boolean, null por defecto)
+
+Obra vigente = `obra_activa = true` y `obra_finalizada` distinto de `true`. Es el filtro de `api.getLicitaciones()` (home de cartera, obras del ingeniero) y de la asignacion de obras en Gestionar usuarios.
 
 ### `datos_licitaciones_plan_trabajo`
 
@@ -123,7 +126,7 @@ Usage:
 - Drives planned windows
 - Drives admin comparison charts
 
-### `datos_licitaciones_periodos`
+### `Datos_Licitaciones_Periodos`
 
 Period definitions for planning.
 

@@ -20,7 +20,7 @@ export function ForgotPassword() {
 
             if (resetError) setError(resetError.message || 'Error al enviar el correo de recuperacion.');
             else setSuccess(true);
-        } catch (_error) {
+        } catch {
             setError('Ocurrio un error inesperado.');
         } finally {
             setLoading(false);

@@ -16,9 +16,10 @@
   - Open item history
   - Report progress with optional photos
 - `admin` / `admin_gerencia`
-  - Use `AdminDashboard`
-  - Filter by project
-  - See KPIs, recent activity, feed, full plan, planning views
+  - Use `AdminDashboard`: portfolio home (`admin/PortfolioHome.jsx`) with one card per active obra
+    (real vs plan a hoy, desvio en pp, ultimo reporte, actividad 14 dias), KPIs, filters and live feed
+  - Tap an obra to open `ProjectDetailDashboard` (feed, full plan, planning views)
+  - User management lives in the header "Usuarios" menu
   - Open item history from admin detail views
 
 ## Entry flow
